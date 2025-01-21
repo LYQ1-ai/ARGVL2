@@ -1,0 +1,37 @@
+dataset:
+  name: "gpt_weibo"
+  root_path: "C:\\Users\\lyq\\DataSet\\FakeNews\\ARG_dataset\\zh"
+  use_cache: True
+  shuffle: True
+  max_len: 170
+  batch_size: 64
+
+model:
+  name: "ARG"
+  version: "1"
+  text_encoder_path: "C:\\Users\\lyq\\Model\\chinese-bert-wwm-ext"
+  image_encoder_path: ""
+  # model parameters
+  emb_dim: 768
+  num_heads: 1
+  dropout: 0.2
+  mlp:
+    dims: [384]
+
+
+train:
+  use_cuda: true
+  num_epochs: 50
+  save_param_dir: "param_model"
+  lr: !!float 2e-5
+  patience: 5
+  weight_decay: !!float 5e-5
+  rationale_usefulness_evaluator_weight: 2.2
+  llm_judgment_predictor_weight: 1.8
+  early_stopping_metric_name: 'f1_macro'
+
+logging:
+  level: "INFO"
+  log_dir: "logs/log/"
+  json_result_dir: "logs/json"
+
