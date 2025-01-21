@@ -1,9 +1,11 @@
+seed: 3759
+
 dataset:
-  name: "qwen_weibo"
-  root_path: "C:\\Users\\lyq\\DataSet\\FakeNews\\weibo_dataset"
+  name: "gpt_weibo"
+  root_path: "C:\\Users\\lyq\\DataSet\\FakeNews\\ARG_dataset\\zh"
   use_cache: True
   shuffle: True
-  max_len: 256
+  max_len: 170
   batch_size: 64
 
 model:
@@ -20,7 +22,10 @@ model:
 
 
 train:
-  use_cuda: true
+  device:
+    use_cuda: True
+    use_multi: False
+    gpu: 0
   num_epochs: 50
   save_param_dir: "param_model"
   lr: !!float 2e-5

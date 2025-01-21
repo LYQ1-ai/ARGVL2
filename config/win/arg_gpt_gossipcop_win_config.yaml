@@ -1,3 +1,5 @@
+seed: 3759
+
 dataset:
   name: "gpt_gossipcop"
   root_path: "C:\\Users\\lyq\\DataSet\\FakeNews\\ARG_dataset\\en"
@@ -20,7 +22,10 @@ model:
 
 
 train:
-  use_cuda: true
+  device:
+    use_cuda: True
+    use_multi: False
+    gpu: 0
   num_epochs: 50
   save_param_dir: "param_model"
   lr: !!float 5e-5

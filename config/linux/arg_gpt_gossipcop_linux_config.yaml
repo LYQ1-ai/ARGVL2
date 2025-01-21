@@ -1,15 +1,18 @@
+seed: 3759
+
+
 dataset:
-  name: "qwen_twitter"
-  root_path: "C:\\Users\\lyq\\DataSet\\FakeNews\\twitter"
+  name: "gpt_gossipcop"
+  root_path: "/home/lyq/DataSet/FakeNews/ARG_dataset/en"
   use_cache: True
   shuffle: True
-  max_len: 50
+  max_len: 170
   batch_size: 64
 
 model:
   name: "ARG"
   version: "1"
-  text_encoder_path: "C:\\Users\\lyq\\Model\\bert-base-uncased"
+  text_encoder_path: "/home/lyq/Model/bert-base-uncased"
   image_encoder_path: ""
   # model parameters
   emb_dim: 768
@@ -19,10 +22,12 @@ model:
     dims: [384]
 
 
-  # ['train']
 train:
-  use_cuda: true
-  num_epochs: 100
+  device:
+    use_cuda: True
+    use_multi: False
+    gpu: 0
+  num_epochs: 50
   save_param_dir: "param_model"
   lr: !!float 5e-5
   patience: 5

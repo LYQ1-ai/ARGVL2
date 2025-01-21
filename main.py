@@ -1,7 +1,10 @@
 import argparse
 import json
 import os
+import random
 
+import numpy as np
+import torch
 import yaml
 
 from Util import Util
@@ -10,8 +13,18 @@ from model.arg import Trainer as ARGTrainer
 parser = argparse.ArgumentParser(description='ARG model training and evaluation')
 parser.add_argument('--config_file_path', type=str, default='config/arg_qwen_gossipcop_win_config.yaml')
 
+
 args = parser.parse_args()
 
+config = yaml.load(open(args.config_file_path, 'r'), Loader=yaml.FullLoader)
+
+seed = config['seed']
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
 
 
 model_name2trainer_dict = {
@@ -23,7 +36,7 @@ model_name2trainer_dict = {
 
 # 按装订区域中的绿色按钮以运行脚本。
 if __name__ == '__main__':
-    config = yaml.load(open(args.config_file_path, 'r'), Loader=yaml.FullLoader)
+
     running_tag = f'{config["model"]["name"]}_{config["model"]["version"]}_{config["dataset"]["name"]}'
     if not os.path.exists(config['logging']['log_dir']):
         os.makedirs(config['logging']['log_dir'])
