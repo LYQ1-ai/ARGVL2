@@ -11,7 +11,7 @@ from transformers import AutoModel, BertModel, Swinv2Model
 
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
-from model.layers import  AttentionPooling, Classifier, SelfAttentionFeatureExtract
+from model.layers import AttentionPooling, Classifier, SelfAttentionFeatureExtract, AvgPooling, MultiHeadCrossAttention
 
 
 def freeze_bert_params(model):
@@ -34,15 +34,15 @@ def freeze_pretrained_params(model):
 class ARGModel(nn.Module):
     def __init__(self, config, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.content_encoder = BertModel.from_pretrained(config['text_encoder_path'])
+        self.content_encoder = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.content_encoder)
-        self.rationale_encoder = BertModel.from_pretrained(config['text_encoder_path'])
+        self.rationale_encoder = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.rationale_encoder)
 
-        #self.td_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'])
-        #self.cs_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'])
-        #self.content2td_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'])
-        #self.content2cs_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'])
+        # self.td_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+        # self.cs_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+        # self.content2td_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+        # self.content2cs_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
 
         self.td_rationale2content_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
         self.cs_rationale2content_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
@@ -72,6 +72,7 @@ class ARGModel(nn.Module):
         self.td_attention_pooling = AttentionPooling(config['emb_dim'])
         self.cs_attention_pooling = AttentionPooling(config['emb_dim'])
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
+        self.avg_pool = AvgPooling()
 
         self.td_reweight_net = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
                                                 nn.BatchNorm1d(config['mlp']['dims'][-1]),
@@ -143,26 +144,26 @@ class ARGModel(nn.Module):
                                                                value=content_features,
                                                                mask=content_mask)[0]
 
-        td2content_pooling_feature = torch.mean(td2content_feature,dim=1)
+        td2content_pooling_feature = self.avg_pool(td2content_feature,td_rationale_mask)
 
         cs2content_feature = self.cs_rationale2content_CA(query=cs_rationale_features,
                                                                key=content_features,
                                                                value=content_features,
                                                                mask=content_mask)[0]
 
-        cs2content_pooling_feature = torch.mean(cs2content_feature,dim=1)
+        cs2content_pooling_feature = self.avg_pool(cs2content_feature,cs_rationale_mask)
 
         content2td_feature = self.content2td_rationale_CA(query=content_features,
                                                           key=td_rationale_features,
                                                           value=td_rationale_features,
                                                           mask=td_rationale_mask)[0]
-        content2td_pooling_feature = torch.mean(content2td_feature,dim=1)
+        content2td_pooling_feature = self.avg_pool(content2td_feature,content_mask)
 
         content2cs_feature = self.content2cs_rationale_CA(query=content_features,
                                                           key=cs_rationale_features,
                                                           value=cs_rationale_features,
                                                           mask=cs_rationale_mask)[0]
-        content2cs_pooling_feature = torch.mean(content2cs_feature,dim=1)
+        content2cs_pooling_feature = self.avg_pool(content2cs_feature,content_mask)
 
         td_rationale_useful_pred = self.td_rationale_useful_predictor(content2td_pooling_feature).squeeze(1)
         cs_rationale_useful_pred = self.cs_rationale_useful_predictor(content2cs_pooling_feature).squeeze(1)
@@ -204,8 +205,8 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rati
     model.train()
     train_data_iter = tqdm(train_loader)
     avg_loss_classify = Averager()
-    loss_useful_fn = torch.nn.BCELoss()
-    loss_judge_fn = torch.nn.CrossEntropyLoss()
+
+
 
     for step_n, batch in enumerate(train_data_iter):
         batch_data = data_to_device(
@@ -223,11 +224,11 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rati
         res = model(**batch_data)
         loss_classify = loss_fn(res['classify_pred'], label.float())
 
-
+        loss_useful_fn = torch.nn.BCELoss()
         loss_hard_aux = loss_useful_fn(res['td_rationale_useful_pred'], td_useful_label.float()) + loss_useful_fn(
             res['cs_rationale_useful_pred'], cs_useful_label.float())
 
-
+        loss_judge_fn = torch.nn.CrossEntropyLoss()
         loss_simple_aux = loss_judge_fn(res['td_judge_pred'],
                                              td_judge_label.long()) + loss_judge_fn(
             res['cs_judge_pred'], cs_judge_label.long())
@@ -259,7 +260,7 @@ class Trainer:
     def __init__(self, config):
         self.config = config
         self.model = ARGModel(config['model'])
-        self.num_rationales = 2.0
+        self.num_rationales = 2
         self.writer = SummaryWriter(f'logs/tensorboard/arg_{config["dataset"]["name"]}')
         self.logger = logging.getLogger(__name__)
         self.running_tag = f'{config["model"]["name"]}/{config["model"]["version"]}/{config["dataset"]["name"]}'

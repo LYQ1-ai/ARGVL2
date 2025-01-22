@@ -37,24 +37,37 @@ def sent2tensor(text, max_len, tokenizer):
     attention_mask = encoded['attention_mask'].squeeze(0)  # 提取 attention_mask 并去掉多余的维度
     return input_ids, attention_mask
 
-
 def texts2tensor(texts, max_len, tokenizer):
-    """
-    :param texts: List[ str ]
-    :param max_len: int
-    :param tokenizer:
-    :return: Tensor shape (batch_size, max_len), Tensor shape (batch_size, max_len)
-    """
-    encodings = tokenizer(
-        texts,
-        add_special_tokens=True,  # 添加特殊标记 [CLS] 和 [SEP]
-        max_length=max_len,  # 最大长度
-        truncation=True,  # 超出部分截断
-        padding='max_length',  # 填充到最大长度
-        return_attention_mask=True,  # 返回 attention mask
-        return_tensors="pt"  # 返回 PyTorch 的张量
-    )
-    return encodings['input_ids'], encodings['attention_mask']
+    token_ids = []
+    for i, text in enumerate(texts):
+        token_ids.append(
+            tokenizer.encode(text, max_length=max_len, add_special_tokens=True, padding='max_length',
+                             truncation=True))
+    token_ids = torch.tensor(token_ids)
+    masks = torch.zeros(token_ids.shape)
+    mask_token_id = tokenizer.pad_token_id
+    for i, tokens in enumerate(token_ids):
+        masks[i] = (tokens != mask_token_id)
+    return token_ids, masks
+
+
+# def texts2tensor(texts, max_len, tokenizer):
+#     """
+#     :param texts: List[ str ]
+#     :param max_len: int
+#     :param tokenizer:
+#     :return: Tensor shape (batch_size, max_len), Tensor shape (batch_size, max_len)
+#     """
+#     encodings = tokenizer(
+#         texts,
+#         add_special_to# kens=True,  # 添加特殊标记 [CLS] 和 [SEP]
+#         max_length=max_len,  # 最大长度
+#         truncation=True,  # 超出部分截断
+#         padding='max_length',  # 填充到最大长度
+#         return_attention_mask=True,  # 返回 attention mask
+#         return_tensors="pt"  # 返回 PyTorch 的张量
+#     )
+#     return encodings['input_ids'], encodings['attention_mask']
 
 def load_image_list(image_path_list, image_processor):
     """
@@ -112,28 +125,10 @@ class ARGDataset(Dataset):
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.max_len = max_len
-        if use_cache:
-            logger.info(f"Using cache: {cache_path}")
-            if os.path.exists(cache_path):
-                logger.info(f"Loading data from cache: {cache_path}")
-                with open(cache_path, "rb") as f:
-                    self.data = pickle.load(f)
-            else:
-                logger.info(f"Creating data from cache: {cache_path}")
-                self.data = df.to_dict("list")
-                self.data = self.data2tensor(self.data,max_len,tokenizer,image_processor,use_image)
-                cache_dir = os.path.dirname(cache_path)
-                if not os.path.exists(cache_dir):
-                    os.makedirs(cache_dir)
 
-                with open(cache_path, "wb") as f:
-                    pickle.dump(self.data, f)
-        else:
-            logger.info(f"Creating data from scratch,not using cache")
-            self.data = df.to_dict("list")
-            self.data = self.data2tensor(self.data, max_len, tokenizer, image_processor, use_image)
+        self.data = df.to_dict("list")
+        self.data = self.data2tensor(self.data, max_len, tokenizer, image_processor, use_image)
 
-        logger.info(f"Creating dataset with {len(self.data)} examples")
         logger.info(
             f"load sum: {len(self.data['source_id'])} "
             f"real {(self.data['label'] == label_str2int_dict['real']).sum().item()} "
@@ -233,7 +228,7 @@ def load_qwen_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,b
 
 def load_qwen_twitter_data(root_path,data_type,tokenizer,image_processor,max_len,batch_size,shuffle,use_cache,use_image):
     def get_image_path_dict():
-        image_dir = f'{path}/images/'
+        image_dir = f'{root_path}/images/'
         return { f.split('.')[0]: f'{image_dir}/{f}' for f in os.listdir(image_dir)}
 
     data_file_name = f'{root_path}/{data_type}.csv'

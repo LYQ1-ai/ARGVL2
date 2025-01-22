@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$USER_HOME$/DataSet/FakeNews" vcs="Git" />
+    <mapping directory="$USER_HOME$/Model/Qwen2-VL-7B-Instruct" vcs="Git" />
+    <mapping directory="$USER_HOME$/Model/bert-base-uncased" vcs="Git" />
+    <mapping directory="$USER_HOME$/Model/chinese-bert-wwm-ext" vcs="Git" />
+    <mapping directory="$USER_HOME$/Model/clip-vit-large-patch14" vcs="Git" />
+  </component>
+</project>

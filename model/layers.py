@@ -110,10 +110,24 @@ class AttentionPooling(nn.Module):
 
         attention_scores = self.attention(input_feature).squeeze(-1)  # shape (batch_size, seq_len)
         if attention_mask is not None:
-            attention_scores = attention_scores.masked_fill(~attention_mask.bool(), float('-inf'))
+            attention_scores = attention_scores.masked_fill(attention_mask == 0, float('-inf'))
         attention_weights = nn.functional.softmax(attention_scores, dim=-1)  # shape (batch_size, seq_len)
         attention_pooling_feature = torch.bmm(attention_weights.unsqueeze(1), input_feature).squeeze(1)  # shape (batch_size, emb_dim)
         return attention_pooling_feature
+
+
+
+
+class AvgPooling(nn.Module):
+
+    def forward(self, input_feature, attention_mask=None):
+        """
+        :param input_feature: shape (batch_size, seq_len, emb_dim)
+        :param attention_mask: shape (batch_size, seq_len)
+        :return: pooling_feature: shape (batch_size, emb_dim)
+        """
+        return torch.mean(input_feature, dim=1)
+
 
 
 
