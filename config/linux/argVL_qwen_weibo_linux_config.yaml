@@ -1,18 +1,18 @@
 seed: 3756
 
 dataset:
-  name: "gpt_weibo"
-  root_path: "/home/lyq/DataSet/FakeNews/ARG_dataset/zh"
+  name: "qwen_weibo"
+  root_path: "/home/lyq/DataSet/FakeNews/weibo_dataset"
   use_cache: True
   shuffle: True
-  max_len: 170
+  max_len: 256
   batch_size: 64
 
 model:
-  name: "ARG"
+  name: "ARGVL"
   version: "1"
   text_encoder_path: "/home/lyq/Model/chinese-bert-wwm-ext"
-  image_encoder_path: ""
+  image_encoder_path: "/home/lyq/Model/swinv2-tiny-patch4-window16-256"
   # model parameters
   emb_dim: 768
   num_heads: 1
@@ -35,8 +35,8 @@ train:
   llm_judgment_predictor_weight: 1.8
   early_stopping_metric_name: 'f1_macro'
   LossWeight:
-    classify: 1.0
-    usefulPred: 2.0
+    classify: 0.0
+    usefulPred: 3.0
 
 logging:
   level: "INFO"

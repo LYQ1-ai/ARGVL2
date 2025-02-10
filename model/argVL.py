@@ -1,3 +1,5 @@
+
+
 import logging
 import os
 import time
@@ -6,14 +8,13 @@ import torch
 from sympy.polys.polyconfig import query
 from tensorboardX import SummaryWriter
 from torch import nn
-import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoModel, BertModel, Swinv2Model
 
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
-from model.layers import AttentionPooling, Classifier, SelfAttentionFeatureExtract, AvgPooling, MultiHeadCrossAttention, \
-    WeightedBCELoss
+from model.layers import AttentionPooling, Classifier, AvgPooling, MultiHeadCrossAttention, \
+    FeatureAggregation, ImageCaptionGate, WeightedBCELoss
 
 
 def freeze_bert_params(model):
@@ -23,28 +24,40 @@ def freeze_bert_params(model):
         else:
             param.requires_grad = False
 
+
+def freeze_swinv2_params(model):
+    for name, param in model.named_parameters():
+        if name.startswith("encoder.layers.3"):
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
 def freeze_pretrained_params(model):
     if isinstance(model,BertModel):
         freeze_bert_params(model)
     elif isinstance(model,Swinv2Model):
-        # TODO freeze swin params
-        pass
+        freeze_swinv2_params(model)
 
 
 
 
-class ARGModel(nn.Module):
+class ARGVLModel(nn.Module):
     def __init__(self, config, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.content_encoder = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.content_encoder)
         self.rationale_encoder = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.rationale_encoder)
+        self.bert_caption = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
+        freeze_pretrained_params(self.bert_caption)
+        self.image_encoder = Swinv2Model.from_pretrained(config['image_encoder_path']).requires_grad_(False)
+        freeze_pretrained_params(self.image_encoder)
 
         self.td_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
         self.cs_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
         self.content2td_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
         self.content2cs_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
+        self.image2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
 
         # self.td_rationale2content_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
         # self.cs_rationale2content_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
@@ -74,6 +87,7 @@ class ARGModel(nn.Module):
         self.td_attention_pooling = AttentionPooling(config['emb_dim'])
         self.cs_attention_pooling = AttentionPooling(config['emb_dim'])
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
+        self.image_attention_pooling = AttentionPooling(config['emb_dim'])
         self.avg_pool = AvgPooling()
 
         self.td_reweight_net = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
@@ -104,9 +118,15 @@ class ARGModel(nn.Module):
                                                 nn.Sigmoid()
                                                 )
 
-        self.feature_aggregation = AttentionPooling(config['emb_dim'])
+
+
+        self.imageCaptionGate = ImageCaptionGate(config)
+
+        self.featureAggregator = FeatureAggregation(config['emb_dim'])
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
+
+
 
 
 
@@ -133,10 +153,18 @@ class ARGModel(nn.Module):
             "caption":Optional[Tensor],
             "caption_mask":Optional[Tensor]
             "split":"train"
+            "image": Tensor (batch_size,49,768)
         }
         :return:
         """
         content_mask = kwargs['content_mask']
+        image_encoding = self.image_encoder(kwargs['image'])
+        image_pooling_feature, image_feature = image_encoding.pooler_output, image_encoding.last_hidden_state
+
+        caption_mask = kwargs['caption_mask']
+        caption_encoding = self.bert_caption(kwargs['caption'], attention_mask=caption_mask)
+        caption_pooling_feature, caption_feature = caption_encoding.pooler_output, caption_encoding.last_hidden_state
+
         content_features = self.content_encoder(kwargs['content'],attention_mask=content_mask).last_hidden_state
 
         td_rationale_mask = kwargs['td_rationale_mask']
@@ -171,6 +199,13 @@ class ARGModel(nn.Module):
                                                           mask=cs_rationale_mask)[0]
         content2cs_pooling_feature = self.avg_pool(content2cs_feature,content_mask)
 
+        image2content_pooling_feature = self.image_attention_pooling(
+            self.image2content_CA(query=image_feature,
+                                  key=content_features,
+                                  value=content_features,
+                                  mask=content_mask)[0]
+        )
+
         td_rationale_useful_pred = self.td_rationale_useful_predictor(content2td_pooling_feature).squeeze(1)
         cs_rationale_useful_pred = self.cs_rationale_useful_predictor(content2cs_pooling_feature).squeeze(1)
 
@@ -181,31 +216,39 @@ class ARGModel(nn.Module):
             self.cs_attention_pooling(cs_rationale_features,cs_rationale_mask)
         )
 
+
+
         td_rationale_weight = self.td_reweight_net(content2td_pooling_feature)
         cs_rationale_weight = self.cs_reweight_net(content2cs_pooling_feature)
+        image_weight = self.imageCaptionGate(caption_feature,
+                                                        content_features,
+                                                        caption_mask,
+                                                        content_mask)
 
         td2content_pooling_feature = td_rationale_weight * td2content_pooling_feature
         cs2content_pooling_feature = cs_rationale_weight * cs2content_pooling_feature
+        image2content_pooling_feature = image_weight * image2content_pooling_feature
 
-        content_features = self.content_attention_pooling(content_features,content_mask)
+        content_pooling_features = self.content_attention_pooling(content_features,content_mask)
 
-        all_features = torch.cat([
-            content_features.unsqueeze(1),td2content_pooling_feature.unsqueeze(1),cs2content_pooling_feature.unsqueeze(1)
-        ],dim=1)
-        all_features = self.feature_aggregation(all_features)
-        label_pred = self.classifier(all_features).squeeze(1)
+        final_feature = self.featureAggregator(content_pooling_feature=content_pooling_features,
+                                               image_pooling_feature=image2content_pooling_feature,
+                                               rationale1_pooling_feature=td2content_pooling_feature,
+                                               rationale2_pooling_feature=cs2content_pooling_feature,
+                                               )
+
+        label_pred = self.classifier(final_feature).squeeze(1)
 
         return {
             "classify_pred":label_pred,
             "td_rationale_weight":td_rationale_weight,
             "cs_rationale_weight":cs_rationale_weight,
+            'image_weight':image_weight,
             "td_rationale_useful_pred":td_rationale_useful_pred,
             "cs_rationale_useful_pred":cs_rationale_useful_pred,
             "td_judge_pred":td_judge_pred,
             "cs_judge_pred":cs_judge_pred
         }
-
-
 
 
 def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rationales,device):
@@ -252,8 +295,6 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rati
 
     return avg_loss_classify
 
-
-
 class Trainer:
 
     def model_device_init(self):
@@ -284,15 +325,13 @@ class Trainer:
 
     def __init__(self, config):
         self.config = config
-        self.model = ARGModel(config['model'])
+        self.model = ARGVLModel(config['model'])
         self.rationale_names = ['td','cs']
-        self.writer = SummaryWriter(f'logs/tensorboard/arg_{config["dataset"]["name"]}')
-        self.logger = logging.getLogger(__name__)
         self.running_tag = f'{config["model"]["name"]}/{config["model"]["version"]}/{config["dataset"]["name"]}'
-        self.save_path = f'{config["train"]["save_param_dir"]}/{config["model"]["name"]}_{config["model"]["version"]}/{config["dataset"]["name"]}'
-        self.save_path = os.path.join(config["train"]["save_param_dir"],
-                                      f'{config["model"]["name"]}_{config["model"]["version"]}',
-                                      config["dataset"]["name"])
+        self.writer = SummaryWriter(f'logs/tensorboard/{self.running_tag}')
+        self.logger = logging.getLogger(__name__)
+        self.save_path = f'{config["train"]["save_param_dir"]}/{self.running_tag}'
+        self.save_path = os.path.join(config["train"]["save_param_dir"],self.running_tag)
         if os.path.exists(self.save_path):
             self.save_param_dir = self.save_path
         else:
@@ -328,10 +367,9 @@ class Trainer:
 
         train_loader, val_loader, test_loader = dataloader.load_data(text_encoder_path=self.config['model']['text_encoder_path'],
                                                                              image_encoder_path=self.config['model']['image_encoder_path'],
-                                                                             use_image=False,
+                                                                             use_image=True,
                                                                             **self.config['dataset'])
         num_rationales = len(self.rationale_names)
-
 
         ed_tm = time.time()
         self.logger.info('time cost in model and data loading: {}s'.format(ed_tm - st_tm))
@@ -347,12 +385,12 @@ class Trainer:
             self.logger.info('epoch: {}, test_loss_classify: {:.4f}'.format(epoch, val_metrics["classifier"]['loss_classify']))
 
             if mark == Decision.SAVE:
-                torch.save(self.model.state_dict(), os.path.join(self.save_path, 'model.pth'))
+                torch.save(self.model.state_dict(), os.path.join(self.save_path, 'parameter_bert.pt'))
             if mark == Decision.ESCAPE:
                 break
 
         self.logger.info('----- in test progress... -----')
-        self.model.load_state_dict(torch.load(os.path.join(self.save_path, 'model.pth')))
+        self.model.load_state_dict(torch.load(os.path.join(self.save_path, 'parameter_bert.pt')))
         test_metrics = self.test(test_loader, device)
         self.logger.info("test metrics: {}.".format(test_metrics['classifier']))
         self.writer.add_scalars(self.running_tag, test_metrics['classifier'])

@@ -9,6 +9,12 @@ import yaml
 
 from Util import Util
 from model.arg import Trainer as ARGTrainer
+from model.argVL import Trainer as ARGVLTrainer
+from model.argVL2 import Trainer as ARGVL2Trainer
+
+
+
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 parser = argparse.ArgumentParser(description='ARG model training and evaluation')
 parser.add_argument('--config_file_path', type=str, default='config/arg_qwen_gossipcop_win_config.yaml')
@@ -28,7 +34,9 @@ torch.backends.cudnn.deterministic = True
 
 
 model_name2trainer_dict = {
-    'ARG': ARGTrainer
+    'ARG': ARGTrainer,
+    'ARGVL':ARGVLTrainer,
+    'ARGVL2':ARGVL2Trainer
 }
 
 

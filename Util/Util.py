@@ -7,6 +7,31 @@ from sklearn.metrics import roc_auc_score, f1_score, recall_score, precision_sco
 from Util.dataloader import label_int2str_dict, classified_label_int2str_dict
 
 
+def merge_texts(token_matrix1, mask_matrix1, token_matrix2, mask_matrix2):
+    """
+    合并两个文本的分词矩阵和mask矩阵。
+
+    参数:
+    - token_matrix1: 第一个文本的分词后的矩阵，形状为(batch_size, seq_len)
+    - mask_matrix1: 第一个文本的mask矩阵，形状为(batch_size, seq_len)
+    - token_matrix2: 第二个文本的分词后的矩阵，形状为(batch_size, seq_len)
+    - mask_matrix2: 第二个文本的mask矩阵，形状为(batch_size, seq_len)
+
+    返回:
+    - merged_tokens: 合并后的分词矩阵，形状为(batch_size, seq_len*2)
+    - merged_masks: 合并后的mask矩阵，形状为(batch_size, seq_len*2)
+    """
+    # 确保输入的四个矩阵在第0维上可以进行拼接，即batch_size相同
+    assert token_matrix1.size(0) == token_matrix2.size(0), "Batch sizes must match"
+    assert token_matrix1.size(0) == mask_matrix1.size(0), "Batch sizes must match"
+    assert token_matrix2.size(0) == mask_matrix2.size(0), "Batch sizes must match"
+
+    # 拼接分词矩阵和mask矩阵
+    merged_tokens = torch.cat((token_matrix1, token_matrix2), dim=1)
+    merged_masks = torch.cat((mask_matrix1, mask_matrix2), dim=1)
+
+    return merged_tokens, merged_masks
+
 def setup_logger(log_file, level=logging.INFO):
     logging.basicConfig(
         level=level,  # 设置日志级别
@@ -210,17 +235,30 @@ class MetricsRecorder:
         self.rationale_usefulness_labels = []
         self.rationale_usefulness_predictions = []
 
-    def record(self,batch_data,res):
+    def record(self,batch_data,res,rationale_names):
         batch_label = batch_data['label']
         self.classifier_labels.append(batch_label)
         self.classifier_predictions.append(res['classify_pred'])
-        self.llm_judgment_labels.append(torch.cat((batch_data['td_pred'], batch_data['cs_pred']), dim=0))
+
+
+        self.llm_judgment_labels.append(
+            torch.cat(
+                [ batch_data[f'{r_name}_pred']  for r_name in rationale_names], dim=0
+            )
+        )
         llm_judgment_prediction = torch.cat(
-            (res['td_judge_pred'], res['cs_judge_pred'])
+            [res[f'{r_name}_judge_pred'] for r_name in rationale_names]
             ,dim=0)
         self.llm_judgment_predictions.append(llm_judgment_prediction)
-        self.rationale_usefulness_labels.append(torch.cat((batch_data['td_acc'], batch_data['cs_acc']), dim=0))
-        self.rationale_usefulness_predictions.append(torch.cat((res['td_rationale_useful_pred'], res['cs_rationale_useful_pred']), dim=0))
+        self.rationale_usefulness_labels.append(torch.cat(
+            [batch_data[f'{r_name}_acc'] for r_name in rationale_names],
+            dim=0
+        ))
+        self.rationale_usefulness_predictions.append(
+            torch.cat(
+                [res[f'{r_name}_rationale_useful_pred']for r_name in rationale_names]
+                  , dim=0
+            ))
 
 
     def get_metrics(self):

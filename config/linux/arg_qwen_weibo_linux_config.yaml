@@ -1,4 +1,4 @@
-seed: 3759
+seed: 3756
 
 dataset:
   name: "qwen_weibo"
@@ -24,8 +24,8 @@ model:
 train:
   device:
     use_cuda: True
-    use_multi: False
-    gpu: 1
+    use_multi: True
+    gpu: 0
   num_epochs: 50
   save_param_dir: "param_model"
   lr: !!float 2e-5
@@ -34,6 +34,9 @@ train:
   rationale_usefulness_evaluator_weight: 2.2
   llm_judgment_predictor_weight: 1.8
   early_stopping_metric_name: 'f1_macro'
+  LossWeight:
+    classify: 0.0
+    usefulPred: 3.0
 
 logging:
   level: "INFO"

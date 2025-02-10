@@ -2,10 +2,116 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Function
 import math
-from timm.models.vision_transformer import Block
 
+
+
+class DualCrossAttentionLayer(nn.Module):
+    def __init__(self, d_model, n_head,dropout=0.1):
+        super(DualCrossAttentionLayer, self).__init__()
+        self.attention1 = nn.MultiheadAttention(d_model, n_head,dropout=dropout,batch_first=True)
+        self.attention2 = nn.MultiheadAttention(d_model, n_head,dropout=dropout,batch_first=True)
+
+    def forward(self, input1,mask1,input2,mask2):
+        out1 = self.attention1(query=input1,key=input2,value=input2,key_padding_mask=~mask2.bool())[0]
+        out2 = self.attention2(query=input2,key=input1,value=input1,key_padding_mask=~mask1.bool())[0]
+        return out1,out2
+
+
+class DualCrossAttention(nn.Module):
+
+    def __init__(self, d_model, n_head,layers=1,dropout=0.1):
+        super(DualCrossAttention, self).__init__()
+        self.dca_layers = nn.ModuleList([DualCrossAttentionLayer(d_model,n_head,dropout) for _ in range(layers)])
+
+    def forward(self, input1,mask1,input2,mask2):
+        for blk in self.dca_layers:
+            input1,input2 = blk(input1,mask1,input2,mask2)
+        return torch.cat([input1,input2],dim=1),torch.cat([mask1,mask2],dim=1)
+
+
+class WeightedBCELoss(nn.Module):
+    def __init__(self, weight=0.0, reduce_class=0, reduction='mean', eps=1e-8):
+        super(WeightedBCELoss, self).__init__()
+        self.weight = weight
+        self.reduce_class = reduce_class
+        self.reduction = reduction
+        self.eps = eps
+
+    def forward(self, y_pred, y_true):
+        # Clamp predictions to avoid numerical instability
+        y_pred = torch.clamp(y_pred, min=self.eps, max=1 - self.eps)
+
+        log_y_hat = torch.log(y_pred)
+        log_1_reduce_y_hat = torch.log(1 - y_pred)
+
+        # Apply weights based on reduce_class
+        if self.reduce_class == 0:
+            # Reduce loss for class 0 (negative samples: y_true=0)
+            loss_negative = (1 - y_true) * (y_pred ** self.weight) * log_1_reduce_y_hat
+            loss_positive = y_true * log_y_hat
+        else:
+            # Reduce loss for class 1 (positive samples: y_true=1)
+            loss_positive = y_true * ((1 - y_pred) ** self.weight) * log_y_hat
+            loss_negative = (1 - y_true) * log_1_reduce_y_hat
+
+        loss = -(loss_positive + loss_negative)
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+
+
+
+
+
+class FeatureAggregation(nn.Module):
+
+    def __init__(self, emb_dim):
+        super(FeatureAggregation,self).__init__()
+        self.attentionPooling = AttentionPooling(emb_dim)
+
+    def forward(self, content_pooling_feature, image_pooling_feature, rationale1_pooling_feature,
+                rationale2_pooling_feature):
+        final_feature = torch.cat([content_pooling_feature.unsqueeze(1), image_pooling_feature.unsqueeze(1),
+                                   rationale1_pooling_feature.unsqueeze(1), rationale2_pooling_feature.unsqueeze(1)], dim=1)
+        return self.attentionPooling(final_feature)
+
+class ImageCaptionGate(nn.Module):
+    def __init__(self,config):
+        super(ImageCaptionGate, self).__init__()
+        self.attention = nn.MultiheadAttention(config['emb_dim'],config['num_heads'],batch_first=True)
+        self.attention_pooling = AttentionPooling(config['emb_dim'])
+        self.image_reweight_net = nn.Sequential(
+            nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+            nn.BatchNorm1d(config['mlp']['dims'][-1]),
+            nn.ReLU(),
+            nn.Dropout(config['dropout']),
+            nn.Linear(config['mlp']['dims'][-1], 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(config['dropout']),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, caption_feature,content_feature,caption_mask,content_mask):
+        """
+        :param caption_feature: shape (batch_size, seq_len, emb_dim)
+        :param content_feature: shape (batch_size, seq_len, emb_dim)
+        :param caption_mask: shape (batch_size, seq_len)
+        :param content_mask: shape (batch_size, seq_len)
+        :return: shape: (batch_size, 1)
+        """
+        content2caption_attn = self.attention(query = content_feature,
+                                              key = caption_feature,
+                                              value = caption_feature,
+                                              key_padding_mask=~caption_mask.bool())[0]
+        content2caption_attn_pooling = self.attention_pooling(content2caption_attn,attention_mask=content_mask)
+        return self.image_reweight_net(content2caption_attn_pooling)
 
 
 class SelfAttentionFeatureExtract(torch.nn.Module):

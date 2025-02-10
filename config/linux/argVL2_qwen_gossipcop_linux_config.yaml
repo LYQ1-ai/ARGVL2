@@ -1,18 +1,18 @@
-seed: 3756
+seed: 3757
 
 dataset:
-  name: "gpt_weibo"
-  root_path: "/home/lyq/DataSet/FakeNews/ARG_dataset/zh"
+  name: "qwen_gossipcop"
+  root_path: "/media/shared_d/lyq/DataSet/FakeNews/gossipcop"
   use_cache: True
   shuffle: True
-  max_len: 170
+  max_len: 394
   batch_size: 64
 
 model:
-  name: "ARG"
+  name: "ARGVL2"
   version: "1"
-  text_encoder_path: "/home/lyq/Model/chinese-bert-wwm-ext"
-  image_encoder_path: ""
+  text_encoder_path: "/media/shared_d/lyq/Model/roberta-base"
+  image_encoder_path: "/media/shared_d/lyq/Model/swinv2-tiny-patch4-window16-256"
   # model parameters
   emb_dim: 768
   num_heads: 1
@@ -21,22 +21,23 @@ model:
     dims: [384]
 
 
+  # ['train']
 train:
   device:
     use_cuda: True
     use_multi: True
     gpu: 0
-  num_epochs: 50
+  num_epochs: 100
   save_param_dir: "param_model"
-  lr: !!float 2e-5
+  lr: !!float 5e-5
   patience: 5
   weight_decay: !!float 5e-5
-  rationale_usefulness_evaluator_weight: 2.2
-  llm_judgment_predictor_weight: 1.8
+  rationale_usefulness_evaluator_weight: 1.5
+  llm_judgment_predictor_weight: 0.5
   early_stopping_metric_name: 'f1_macro'
   LossWeight:
-    classify: 1.0
-    usefulPred: 2.0
+    classify: 2.0
+    usefulPred: 3.0
 
 logging:
   level: "INFO"
