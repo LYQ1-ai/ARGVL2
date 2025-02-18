@@ -7,13 +7,13 @@ from sympy.polys.polyconfig import query
 from tensorboardX import SummaryWriter
 from torch import nn
 import torch.nn.functional as F
+from torch.nn import BCELoss
 from tqdm import tqdm
 from transformers import AutoModel, BertModel, Swinv2Model
 
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
-from model.layers import AttentionPooling, Classifier, SelfAttentionFeatureExtract, AvgPooling, MultiHeadCrossAttention, \
-    WeightedBCELoss
+from model.layers import AttentionPooling, Classifier, SelfAttentionFeatureExtract, AvgPooling, MultiHeadCrossAttention
 
 
 def freeze_bert_params(model):
@@ -232,7 +232,7 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rati
         res = model(**batch_data)
         loss_classify = loss_fn(res['classify_pred'], label.float())
 
-        loss_useful_fn = WeightedBCELoss(weight=config['train']['LossWeight']['usefulPred'],reduce_class=1)
+        loss_useful_fn = BCELoss()
         loss_hard_aux = loss_useful_fn(res['td_rationale_useful_pred'], td_useful_label.float()) + loss_useful_fn(
             res['cs_rationale_useful_pred'], cs_useful_label.float())
 
@@ -305,7 +305,7 @@ class Trainer:
         self.logger.info('start training......')
         self.logger.info('==================== start training ====================')
         device = self.model_device_init()
-        loss_fn = WeightedBCELoss(weight=self.config['train']['LossWeight']['classify'],reduce_class=0)
+        loss_fn = BCELoss()
         optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config['train']['lr'],
                                      weight_decay=self.config['train']['weight_decay'])
         # 获取早停监控的指标名称

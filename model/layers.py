@@ -4,7 +4,67 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
+
+def contrastive_loss(logits):
+    n = logits.size(0)  # 获取批次大小
+
+    # 生成标签 (0 到 n-1)
+    labels = torch.arange(n, device=logits.device)
+
+    # 计算 loss_i: 沿 axis=0 的交叉熵损失
+    loss_i = F.cross_entropy(logits, labels)
+
+    # 计算 loss_t: 沿 axis=1 的交叉熵损失
+    # 转置 logits 矩阵以沿不同轴计算
+    loss_t = F.cross_entropy(logits.T, labels)
+
+    # 平均损失
+    loss = (loss_i + loss_t) / 2
+
+    return loss
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2, reduction='mean'):
+        """
+        Focal Loss的PyTorch实现，用于处理类别不平衡问题。
+
+        参数:
+            alpha (float): 正样本的权重系数，默认为0.25。负样本权重为1 - alpha。
+            gamma (float): 调节难易样本的聚焦参数，默认为2。
+            reduction (str): 损失汇总方式，可选'mean'（平均）或'sum'（求和）。
+        """
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        # 确保targets的dtype为float，以便后续计算
+        targets = targets.float()
+
+        # 计算二元交叉熵损失（不进行汇总）
+        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+
+        # 计算概率pt：模型预测正确类别的概率
+        pt = torch.exp(-ce_loss)
+
+        # 根据目标类别选择对应的alpha系数
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+
+        # 计算Focal Loss
+        focal_loss = alpha_t * (1 - pt) ** self.gamma * ce_loss
+
+        # 根据reduction参数汇总损失
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
 
 class DualCrossAttentionLayer(nn.Module):
     def __init__(self, d_model, n_head,dropout=0.1):
@@ -30,40 +90,6 @@ class DualCrossAttention(nn.Module):
         return torch.cat([input1,input2],dim=1),torch.cat([mask1,mask2],dim=1)
 
 
-class WeightedBCELoss(nn.Module):
-    def __init__(self, weight=0.0, reduce_class=0, reduction='mean', eps=1e-8):
-        super(WeightedBCELoss, self).__init__()
-        self.weight = weight
-        self.reduce_class = reduce_class
-        self.reduction = reduction
-        self.eps = eps
-
-    def forward(self, y_pred, y_true):
-        # Clamp predictions to avoid numerical instability
-        y_pred = torch.clamp(y_pred, min=self.eps, max=1 - self.eps)
-
-        log_y_hat = torch.log(y_pred)
-        log_1_reduce_y_hat = torch.log(1 - y_pred)
-
-        # Apply weights based on reduce_class
-        if self.reduce_class == 0:
-            # Reduce loss for class 0 (negative samples: y_true=0)
-            loss_negative = (1 - y_true) * (y_pred ** self.weight) * log_1_reduce_y_hat
-            loss_positive = y_true * log_y_hat
-        else:
-            # Reduce loss for class 1 (positive samples: y_true=1)
-            loss_positive = y_true * ((1 - y_pred) ** self.weight) * log_y_hat
-            loss_negative = (1 - y_true) * log_1_reduce_y_hat
-
-        loss = -(loss_positive + loss_negative)
-
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        else:
-            return loss
-
 
 
 
@@ -79,6 +105,64 @@ class FeatureAggregation(nn.Module):
         final_feature = torch.cat([content_pooling_feature.unsqueeze(1), image_pooling_feature.unsqueeze(1),
                                    rationale1_pooling_feature.unsqueeze(1), rationale2_pooling_feature.unsqueeze(1)], dim=1)
         return self.attentionPooling(final_feature)
+
+
+class SelfAttentionFeatureAggregation(nn.Module):
+
+    def __init__(self, emb_dim, nums_head, dropout=0.1, layers=1):
+        super(SelfAttentionFeatureAggregation,self).__init__()
+        self.attentionPooling = AttentionPooling(emb_dim)
+        self.attention_layers = nn.ModuleList([nn.MultiheadAttention(emb_dim,nums_head,dropout=dropout,batch_first=True) for _ in range(layers)])
+
+    def forward(self, content_pooling_feature, rationale1_pooling_feature,
+                rationale2_pooling_feature):
+        final_feature = torch.cat([content_pooling_feature.unsqueeze(1),
+                                   rationale1_pooling_feature.unsqueeze(1), rationale2_pooling_feature.unsqueeze(1)],
+                                  dim=1)
+
+        for blk in self.attention_layers:
+            final_feature = blk(query=final_feature, key=final_feature, value=final_feature)[0]
+        return self.attentionPooling(final_feature)
+
+class MultiViewAggregationLayer(nn.Module):
+    def __init__(self, emb_dim, nums_view, dropout=0.1):
+        super(MultiViewAggregationLayer,self).__init__()
+        self.emb_dim = emb_dim
+        self.aggregator = nn.Sequential(
+            nn.Linear(emb_dim, nums_view, bias=False),
+            nn.BatchNorm1d(nums_view),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, multi_features):
+        attention_weight = nn.functional.softmax(self.aggregator(multi_features).transpose(1,2),dim=-1)
+        return torch.bmm(attention_weight,multi_features)
+
+
+class MultiViewAggregation(nn.Module):
+
+    def __init__(self, emb_dim, nums_view, dropout=0.1,layers=1):
+        super(MultiViewAggregation,self).__init__()
+        self.MultiViewAggregationLayers = nn.ModuleList([MultiViewAggregationLayer(emb_dim,nums_view,dropout) for _ in range(layers)])
+        self.attentionPooling = AttentionPooling(emb_dim)
+
+    def forward(self, multi_features):
+        for blk in self.MultiViewAggregationLayers:
+            multi_features = blk(multi_features)
+
+        return self.attentionPooling(multi_features)
+
+
+
+
+
+
+
+
+
+
+
 
 class ImageCaptionGate(nn.Module):
     def __init__(self,config):

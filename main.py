@@ -11,6 +11,7 @@ from Util import Util
 from model.arg import Trainer as ARGTrainer
 from model.argVL import Trainer as ARGVLTrainer
 from model.argVL2 import Trainer as ARGVL2Trainer
+from model.ContrastiveModel import  Trainer as ContrastiveTrainer
 
 
 
@@ -36,7 +37,8 @@ torch.backends.cudnn.deterministic = True
 model_name2trainer_dict = {
     'ARG': ARGTrainer,
     'ARGVL':ARGVLTrainer,
-    'ARGVL2':ARGVL2Trainer
+    'ARGVL2':ARGVL2Trainer,
+    'ContrastiveModel':ContrastiveTrainer
 }
 
 

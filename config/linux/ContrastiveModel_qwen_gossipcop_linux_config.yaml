@@ -6,20 +6,16 @@ dataset:
   use_cache: True
   shuffle: True
   max_len: 256
-  batch_size: 64
+  batch_size: 128
 
 model:
-  name: "ARGVL2"
-  version: "5"
+  name: "ContrastiveModel"
+  version: "1"
+  temperature: 0.07
   text_encoder_path: "/media/shared_d/lyq/Model/roberta-base"
   image_encoder_path: "/media/shared_d/lyq/Model/swinv2-tiny-patch4-window16-256"
-  ContrastiveModel_path: "param_model/ContrastiveModel/1/qwen_gossipcop"
   # model parameters
-  emb_dim: 768
-  num_heads: 1
-  dropout: 0.2
-  mlp:
-    dims: [384]
+  sim_emb: 768
 
 
   # ['train']
@@ -28,18 +24,12 @@ train:
     use_cuda: True
     use_multi: False
     gpu: 0
-  num_epochs: 100
+  num_epochs: 200
   save_param_dir: "param_model"
-  lr: !!float 5e-5
-  patience: 8
+  lr: !!float 4e-4
+  patience: 5
   weight_decay: !!float 5e-5
-  rationale_usefulness_evaluator_weight: 1.5
-  llm_judgment_predictor_weight: 0.5
-  early_stopping_metric_name: 'f1_macro'
-  FocalLoss:
-    enable: True
-    alpha: 0.5
-    gamma: 1.5
+  early_stopping_metric_name: 'val_loss'
 
 logging:
   level: "INFO"

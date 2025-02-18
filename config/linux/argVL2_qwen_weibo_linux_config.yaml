@@ -1,4 +1,4 @@
-seed: 3756
+seed: 3757
 
 dataset:
   name: "qwen_weibo"
@@ -10,9 +10,10 @@ dataset:
 
 model:
   name: "ARGVL2"
-  version: "1"
-  text_encoder_path: "/media/shared_d/lyq/Model/chinese-bert-wwm-ext"
+  version: "5"
+  text_encoder_path: "/media/shared_d/lyq/Model/chinese-roberta-wwm-ext"
   image_encoder_path: "/media/shared_d/lyq/Model/swinv2-tiny-patch4-window16-256"
+  ContrastiveModel_path: "param_model/ContrastiveModel/1/qwen_weibo"
   # model parameters
   emb_dim: 768
   num_heads: 1
@@ -24,8 +25,8 @@ model:
 train:
   device:
     use_cuda: True
-    use_multi: True
-    gpu: 0
+    use_multi: False
+    gpu: 1
   num_epochs: 50
   save_param_dir: "param_model"
   lr: !!float 2e-5
@@ -34,9 +35,10 @@ train:
   rationale_usefulness_evaluator_weight: 2.2
   llm_judgment_predictor_weight: 1.8
   early_stopping_metric_name: 'f1_macro'
-  LossWeight:
-    classify: 0.0
-    usefulPred: 3.0
+  FocalLoss:
+    enable: True
+    alpha: 0.5
+    gamma: 1.5
 
 logging:
   level: "INFO"

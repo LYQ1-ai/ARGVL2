@@ -2,7 +2,7 @@ seed: 3756
 
 dataset:
   name: "qwen_twitter"
-  root_path: "/home/lyq/DataSet/FakeNews/twitter"
+  root_path: "/media/shared_d/lyq/DataSet/FakeNews/twitter"
   use_cache: True
   shuffle: True
   max_len: 50
@@ -11,8 +11,8 @@ dataset:
 model:
   name: "ARGVL"
   version: "1"
-  text_encoder_path: "/home/lyq/Model/bert-base-uncased"
-  image_encoder_path: "/home/lyq/Model/swinv2-tiny-patch4-window16-256"
+  text_encoder_path: "/media/shared_d/lyq/Model/roberta-base"
+  image_encoder_path: "/media/shared_d/lyq/Model/swinv2-tiny-patch4-window16-256"
   # model parameters
   emb_dim: 768
   num_heads: 1

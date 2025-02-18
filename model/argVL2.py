@@ -4,18 +4,19 @@ import logging
 import os
 import time
 
+import numpy as np
+import torch.nn.functional as F
 import torch
-from sympy.polys.polyconfig import query
 from tensorboardX import SummaryWriter
 from torch import nn
 from tqdm import tqdm
-from transformers import AutoModel, BertModel, Swinv2Model
+from transformers import AutoModel, BertModel, Swinv2Model, RobertaModel
 
 import Util.Util
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
-from model.layers import AttentionPooling, Classifier, AvgPooling, MultiHeadCrossAttention, \
-    FeatureAggregation, ImageCaptionGate, WeightedBCELoss, DualCrossAttention
+from model.layers import AttentionPooling, Classifier, AvgPooling, MultiHeadCrossAttention, DualCrossAttention, \
+    FocalLoss, contrastive_loss, MultiViewAggregation, ImageCaptionGate
 
 
 def freeze_bert_params(model):
@@ -34,7 +35,7 @@ def freeze_swinv2_params(model):
             param.requires_grad = False
 
 def freeze_pretrained_params(model):
-    if isinstance(model,BertModel):
+    if isinstance(model,BertModel) or isinstance(model,RobertaModel):
         freeze_bert_params(model)
     elif isinstance(model,Swinv2Model):
         freeze_swinv2_params(model)
@@ -42,30 +43,49 @@ def freeze_pretrained_params(model):
 
 
 
+
+
+
+
 class ARGVL2Model(nn.Module):
+
+    @staticmethod
+    def get_text_encoder(config,use_contrastive_model=False):
+        text_encoder = AutoModel.from_pretrained(config['text_encoder_path'])
+        if use_contrastive_model:
+            text_encoder_model_path = os.path.join(config['ContrastiveModel_path'],'text_model.pth')
+            if os.path.exists(text_encoder_model_path):
+                text_encoder.load_state_dict(torch.load(text_encoder_model_path,weights_only=True))
+
+        freeze_pretrained_params(text_encoder)
+        return text_encoder
+
+    @staticmethod
+    def get_image_encoder(config):
+        image_encoder = Swinv2Model.from_pretrained(config['image_encoder_path'])
+        image_encoder_model_path = os.path.join(config['ContrastiveModel_path'], 'image_model.pth')
+        if os.path.exists(image_encoder_model_path):
+            image_encoder.load_state_dict(torch.load(image_encoder_model_path,weights_only=True))
+        freeze_pretrained_params(image_encoder)
+        return image_encoder
+
     def __init__(self, config, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.content_encoder = AutoModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
-        freeze_pretrained_params(self.content_encoder)
-        self.caption_encoder = AutoModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
-        freeze_pretrained_params(self.caption_encoder)
-        self.rationale_encoder = AutoModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
-        freeze_pretrained_params(self.rationale_encoder)
-        #self.image_encoder = Swinv2Model.from_pretrained(config['image_encoder_path']).requires_grad_(False)
-        #freeze_pretrained_params(self.image_encoder)
+
+        self.content_encoder = ARGVL2Model.get_text_encoder(config)
+        self.rationale_encoder = ARGVL2Model.get_text_encoder(config)
+        self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config,True)
+        self.image_encoder = ARGVL2Model.get_image_encoder(config)
+
 
         self.td_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
         self.itc_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
+        self.img_rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'], config['num_heads'], dropout=0.1)
         self.content2td_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
         self.content2itc_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
+        self.content2img_rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
 
         self.caption_content_fusion = DualCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1,layers=1)
-        #self.image2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=0.1)
-
-        # self.td_rationale2content_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
-        # self.cs_rationale2content_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
-        # self.content2td_rationale_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
-        # self.content2cs_rationale_CA = SelfAttentionFeatureExtract(config['num_heads'] ,config['emb_dim'])
 
 
 
@@ -79,6 +99,11 @@ class ARGVL2Model(nn.Module):
                                             nn.Linear(config['mlp']['dims'][-1], 1),
                                             nn.Sigmoid()
                                             )
+        self.img_rationale_useful_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                            nn.ReLU(),
+                                                            nn.Linear(config['mlp']['dims'][-1], 1),
+                                                            nn.Sigmoid()
+                                                            )
 
         self.td_judge_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
                                               nn.ReLU(),
@@ -86,11 +111,15 @@ class ARGVL2Model(nn.Module):
         self.itc_judge_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
                                               nn.ReLU(),
                                               nn.Linear(config['mlp']['dims'][-1], 3))
+        self.img_judge_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                 nn.ReLU(),
+                                                 nn.Linear(config['mlp']['dims'][-1], 3))
 
         self.td_attention_pooling = AttentionPooling(config['emb_dim'])
         self.itc_attention_pooling = AttentionPooling(config['emb_dim'])
+        self.img_attention_pooling = AttentionPooling(config['emb_dim'])
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
-        #self.image_attention_pooling = AttentionPooling(config['emb_dim'])
+        self.image_attention_pooling = AttentionPooling(config['emb_dim'])
         self.avg_pool = AvgPooling()
 
         self.td_reweight_net = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
@@ -120,12 +149,27 @@ class ARGVL2Model(nn.Module):
                                                 nn.Linear(64, 1),
                                                 nn.Sigmoid()
                                                 )
+        self.img_reweight_net = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                              nn.LayerNorm(config['mlp']['dims'][-1]),
+                                              # nn.BatchNorm1d(config['mlp']['dims'][-1]),
+                                              nn.ReLU(),
+                                              nn.Dropout(config['dropout']),
+                                              nn.Linear(config['mlp']['dims'][-1], 64),
+                                              nn.LayerNorm(64),
+                                              # nn.BatchNorm1d(64),
+                                              nn.ReLU(),
+                                              nn.Dropout(config['dropout']),
+                                              nn.Linear(64, 1),
+                                              nn.Sigmoid()
+                                              )
 
 
 
-        #self.imageCaptionGate = ImageCaptionGate(config)
+        self.imageCaptionGate = ImageCaptionGate(config)
 
-        self.featureAggregator = AttentionPooling(config['emb_dim'])
+
+
+        self.featureAggregator = MultiViewAggregation(config['emb_dim'],5,dropout=0.1,layers=2)
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
 
@@ -168,12 +212,16 @@ class ARGVL2Model(nn.Module):
 
         multi_feature,multi_mask = self.caption_content_fusion(caption_features,caption_mask,content_features,content_mask)
 
+        image_content_features = self.image_encoder(kwargs['image']).last_hidden_state
+
 
         td_rationale_mask = kwargs['td_rationale_mask']
         itc_rationale_mask = kwargs['itc_rationale_mask']
+        img_rationale_mask = kwargs['img_rationale_mask']
 
         td_rationale_features = self.rationale_encoder(kwargs['td_rationale'],attention_mask=td_rationale_mask).last_hidden_state
         itc_rationale_features = self.rationale_encoder(kwargs['itc_rationale'],attention_mask=itc_rationale_mask).last_hidden_state
+        img_rationale_features = self.img_rationale_encoder(kwargs['img_rationale'],attention_mask=img_rationale_mask).last_hidden_state
 
         td2content_feature = self.td_rationale2content_CA(query=td_rationale_features,
                                                                key=content_features,
@@ -189,6 +237,12 @@ class ARGVL2Model(nn.Module):
 
         itc2content_pooling_feature = self.avg_pool(itc2content_feature,itc_rationale_mask)
 
+        img2ImageContent_feature = self.img_rationale2content_CA(query=img_rationale_features,
+                                                                 key=image_content_features,
+                                                                 value=image_content_features)[0]
+
+        img2ImageContent_pooling_feature = self.avg_pool(img2ImageContent_feature, img_rationale_mask)
+
         content2td_feature = self.content2td_rationale_CA(query=content_features,
                                                           key=td_rationale_features,
                                                           value=td_rationale_features,
@@ -201,32 +255,54 @@ class ARGVL2Model(nn.Module):
                                                           mask=itc_rationale_mask)[0]
         content2itc_pooling_feature = self.avg_pool(content2itc_feature,multi_mask)
 
+        imageContent2img_feature = self.content2img_rationale_CA(query=image_content_features,
+                                                            key=img_rationale_features,
+                                                            value=img_rationale_features,
+                                                            mask=img_rationale_mask)[0]
+        imageContent2img_pooling_feature = self.avg_pool(imageContent2img_feature)
+
 
         td_rationale_useful_pred = self.td_rationale_useful_predictor(content2td_pooling_feature).squeeze(1)
         itc_rationale_useful_pred = self.itc_rationale_useful_predictor(content2itc_pooling_feature).squeeze(1)
+        img_rationale_useful_pred = self.img_rationale_useful_predictor(imageContent2img_pooling_feature).squeeze(1)
 
         td_judge_pred = self.td_judge_predictor(
-            self.td_attention_pooling(td_rationale_features,td_rationale_mask)
+            #self.td_attention_pooling(td_rationale_features,td_rationale_mask)
+            self.td_attention_pooling(td2content_feature,td_rationale_mask)
         )
         itc_judge_pred = self.itc_judge_predictor(
-            self.itc_attention_pooling(itc_rationale_features,itc_rationale_mask)
+            #self.itc_attention_pooling(itc_rationale_features,itc_rationale_mask)
+            self.itc_attention_pooling(itc2content_feature,itc_rationale_mask)
+        )
+        img_judge_pred = self.img_judge_predictor(
+            #self.img_attention_pooling(img_rationale_features,img_rationale_mask)
+            self.img_attention_pooling(img2ImageContent_feature,img_rationale_mask)
         )
 
 
 
         td_rationale_weight = self.td_reweight_net(content2td_pooling_feature)
         itc_rationale_weight = self.itc_reweight_net(content2itc_pooling_feature)
-
+        img_rationale_weight = self.img_reweight_net(imageContent2img_pooling_feature)
+        image_content_weight = self.imageCaptionGate(caption_feature=caption_features,
+                                                     content_feature=content_features,
+                                                     caption_mask=caption_mask,
+                                                     content_mask=content_mask)
 
         td2content_pooling_feature = td_rationale_weight * td2content_pooling_feature
         itc2content_pooling_feature = itc_rationale_weight * itc2content_pooling_feature
+        img2ImageContent_pooling_feature = img_rationale_weight * img2ImageContent_pooling_feature
+        image_pooling_feature = image_content_weight * self.image_attention_pooling(image_content_features)
 
         content_pooling_features = self.content_attention_pooling(content_features,content_mask)
+
 
         all_features = torch.cat([
             content_pooling_features.unsqueeze(1),
             td2content_pooling_feature.unsqueeze(1),
-            itc2content_pooling_feature.unsqueeze(1)
+            itc2content_pooling_feature.unsqueeze(1),
+            img2ImageContent_pooling_feature.unsqueeze(1),
+            image_pooling_feature.unsqueeze(1)
         ], dim=1)
         final_feature = self.featureAggregator(all_features)
 
@@ -236,10 +312,13 @@ class ARGVL2Model(nn.Module):
             "classify_pred":label_pred,
             "td_rationale_weight":td_rationale_weight,
             "itc_rationale_weight":itc_rationale_weight,
+            'img_rationale_weight':img_rationale_weight,
             "td_rationale_useful_pred":td_rationale_useful_pred,
             "itc_rationale_useful_pred":itc_rationale_useful_pred,
+            'img_rationale_useful_pred':img_rationale_useful_pred,
             "td_judge_pred":td_judge_pred,
-            "itc_judge_pred":itc_judge_pred
+            "itc_judge_pred":itc_judge_pred,
+            "img_judge_pred":img_judge_pred,
         }
 
 
@@ -248,9 +327,7 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rati
     model.train()
     train_data_iter = tqdm(train_loader)
     avg_loss_classify = Averager()
-
-
-
+    logging.info(f"UsefulPredict use FocalLoss : {config['train']['FocalLoss']['enable']}")
     for step_n, batch in enumerate(train_data_iter):
         batch_data = data_to_device(
             batch,
@@ -260,22 +337,28 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rati
 
         td_useful_label = batch_data['td_acc']
         itc_useful_label = batch_data['itc_acc']
+        img_useful_label = batch_data['img_acc']
 
         td_judge_label = batch_data['td_pred']
         itc_judge_label = batch_data['itc_pred']
+        img_judge_label = batch_data['img_pred']
 
         res = model(**batch_data)
         loss_classify = loss_fn(res['classify_pred'], label.float())
 
-        #loss_useful_fn = WeightedBCELoss(weight=config['train']['LossWeight']['usefulPred'],reduce_class=1)
-        loss_useful_fn = nn.BCELoss()
-        loss_hard_aux = loss_useful_fn(res['td_rationale_useful_pred'], td_useful_label.float()) + loss_useful_fn(
-            res['itc_rationale_useful_pred'], itc_useful_label.float())
-
         loss_judge_fn = torch.nn.CrossEntropyLoss()
-        loss_simple_aux = loss_judge_fn(res['td_judge_pred'],
-                                             td_judge_label.long()) + loss_judge_fn(
-            res['itc_judge_pred'], itc_judge_label.long())
+        loss_useful_fn = FocalLoss(alpha=config['train']['FocalLoss']['alpha'],
+                                   gamma=config['train']['FocalLoss']['gamma']) if config['train']['FocalLoss'][
+            'enable'] else nn.BCELoss()
+        loss_hard_aux = loss_useful_fn(res['td_rationale_useful_pred'], td_useful_label.float()) + \
+                        loss_useful_fn(res['itc_rationale_useful_pred'], itc_useful_label.float()) + \
+                        loss_useful_fn(res['img_rationale_useful_pred'], img_useful_label.float())
+
+
+        loss_simple_aux = loss_judge_fn(res['td_judge_pred'],td_judge_label.long()) + \
+                          loss_judge_fn(res['itc_judge_pred'], itc_judge_label.long()) + \
+                          loss_judge_fn(res['img_judge_pred'], img_judge_label.long())
+
 
         loss = loss_classify
         loss += config['train']['rationale_usefulness_evaluator_weight'] * loss_hard_aux / num_rationales
@@ -319,7 +402,7 @@ class Trainer:
     def __init__(self, config):
         self.config = config
         self.model = ARGVL2Model(config['model'])
-        self.rationale_names = ['td','itc']
+        self.rationale_names = ['td','itc','img']
         self.running_tag = f'{config["model"]["name"]}/{config["model"]["version"]}/{config["dataset"]["name"]}'
         self.writer = SummaryWriter(f'logs/tensorboard/{self.running_tag}')
         self.logger = logging.getLogger(__name__)
@@ -361,7 +444,7 @@ class Trainer:
 
         train_loader, val_loader, test_loader = dataloader.load_data(text_encoder_path=self.config['model']['text_encoder_path'],
                                                                              image_encoder_path=self.config['model']['image_encoder_path'],
-                                                                             use_image=False,
+                                                                             use_image=True,
                                                                             **self.config['dataset'])
         num_rationales = len(self.rationale_names)
 
@@ -375,16 +458,16 @@ class Trainer:
             val_metrics = self.test(val_loader, device)
             mark = recorder.add(val_metrics['classifier'])
 
-            # self.writer.add_scalar('test/loss_classify', val_metrics['classifier']['loss_classify'], epoch) TODO 不定时出现loss计算值为Nan
-            # self.logger.info('epoch: {}, test_loss_classify: {:.4f}'.format(epoch, val_metrics["classifier"]['loss_classify']))
+            self.writer.add_scalar('test/loss_classify', val_metrics['classifier']['loss_classify'], epoch)
+            self.logger.info('epoch: {}, test_loss_classify: {:.4f}'.format(epoch, val_metrics["classifier"]['loss_classify']))
 
             if mark == Decision.SAVE:
-                torch.save(self.model.state_dict(), os.path.join(self.save_path, 'parameter_bert.pt'))
+                torch.save(self.model.state_dict(), os.path.join(self.save_path, 'model.pth'))
             if mark == Decision.ESCAPE:
                 break
 
         self.logger.info('----- in test progress... -----')
-        self.model.load_state_dict(torch.load(os.path.join(self.save_path, 'parameter_bert.pt')))
+        self.model.load_state_dict(torch.load(os.path.join(self.save_path, 'model.pth'),weights_only=True))
         test_metrics = self.test(test_loader, device)
         self.logger.info("test metrics: {}.".format(test_metrics['classifier']))
         self.writer.add_scalars(self.running_tag, test_metrics['classifier'])
@@ -409,10 +492,10 @@ class Trainer:
             'rationale_usefulness': rationale_usefulness_metrics
         }
         """
-        # loss_fn = torch.nn.BCELoss() TODO 不定时出现 NaN or Inf found in input tensor.
+        loss_fn = torch.nn.BCELoss()
         self.model.eval()
         data_iter = tqdm(dataloader)
-        #avg_loss_classify = Averager()
+        avg_loss_classify = Averager()
         metrics_recorder = MetricsRecorder()
 
         for step_n, batch in enumerate(data_iter):
@@ -423,12 +506,12 @@ class Trainer:
                 )
                 batch_label = batch_data['label']
                 res = self.model(**batch_data)
-                #loss_classify = loss_fn(res['classify_pred'], batch_label.float())
-                #avg_loss_classify.add(loss_classify.item(),len(batch_label))
+                loss_classify = loss_fn(res['classify_pred'], batch_label.float())
+                avg_loss_classify.add(loss_classify.item(),len(batch_label))
                 metrics_recorder.record(batch_data, res,self.rationale_names)
 
         result_metrics = metrics_recorder.get_metrics()
-        #result_metrics['classifier']['loss_classify'] = avg_loss_classify.item()
+        result_metrics['classifier']['loss_classify'] = avg_loss_classify.item()
         return result_metrics
 
 

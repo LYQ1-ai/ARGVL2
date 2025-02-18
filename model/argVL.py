@@ -8,13 +8,14 @@ import torch
 from sympy.polys.polyconfig import query
 from tensorboardX import SummaryWriter
 from torch import nn
+from torch.nn import BCELoss
 from tqdm import tqdm
 from transformers import AutoModel, BertModel, Swinv2Model
 
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
 from model.layers import AttentionPooling, Classifier, AvgPooling, MultiHeadCrossAttention, \
-    FeatureAggregation, ImageCaptionGate, WeightedBCELoss
+    FeatureAggregation, ImageCaptionGate
 
 
 def freeze_bert_params(model):
@@ -44,11 +45,11 @@ def freeze_pretrained_params(model):
 class ARGVLModel(nn.Module):
     def __init__(self, config, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.content_encoder = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
+        self.content_encoder = AutoModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.content_encoder)
-        self.rationale_encoder = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
+        self.rationale_encoder = AutoModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.rationale_encoder)
-        self.bert_caption = BertModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
+        self.bert_caption = AutoModel.from_pretrained(config['text_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.bert_caption)
         self.image_encoder = Swinv2Model.from_pretrained(config['image_encoder_path']).requires_grad_(False)
         freeze_pretrained_params(self.image_encoder)
@@ -275,7 +276,7 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, num_rati
         res = model(**batch_data)
         loss_classify = loss_fn(res['classify_pred'], label.float())
 
-        loss_useful_fn = WeightedBCELoss(weight=config['train']['LossWeight']['usefulPred'],reduce_class=1)
+        loss_useful_fn = BCELoss()
         loss_hard_aux = loss_useful_fn(res['td_rationale_useful_pred'], td_useful_label.float()) + loss_useful_fn(
             res['cs_rationale_useful_pred'], cs_useful_label.float())
 
@@ -344,7 +345,7 @@ class Trainer:
         self.logger.info('start training......')
         self.logger.info('==================== start training ====================')
         device = self.model_device_init()
-        loss_fn = WeightedBCELoss(weight=self.config['train']['LossWeight']['classify'],reduce_class=0)
+        loss_fn = BCELoss()
         optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config['train']['lr'],
                                      weight_decay=self.config['train']['weight_decay'])
         # 获取早停监控的指标名称
