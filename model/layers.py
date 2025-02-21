@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+
 def contrastive_loss(logits):
     n = logits.size(0)  # 获取批次大小
 
@@ -26,6 +27,62 @@ def contrastive_loss(logits):
     loss = (loss_i + loss_t) / 2
 
     return loss
+
+class BaseRationaleFusion(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+        self.content2rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+
+        self.rationale_useful_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                           nn.ReLU(),
+                                                           nn.Linear(config['mlp']['dims'][-1], 1),
+                                                           nn.Sigmoid()
+                                                           )
+        self.LLM_judge_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                nn.ReLU(),
+                                                nn.Linear(config['mlp']['dims'][-1], 3))
+        self.rationale_attention_pooling = AttentionPooling(config['emb_dim'])
+        self.rationale_reweight_net = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                             nn.LayerNorm(config['mlp']['dims'][-1]),
+                                             # nn.BatchNorm1d(config['mlp']['dims'][-1]),
+                                             nn.ReLU(),
+                                             nn.Dropout(config['dropout']),
+                                             nn.Linear(config['mlp']['dims'][-1], 64),
+                                             nn.LayerNorm(64),
+                                             # nn.BatchNorm1d(64),
+                                             nn.ReLU(),
+                                             nn.Dropout(config['dropout']),
+                                             nn.Linear(64, 1),
+                                             nn.Sigmoid()
+                                             )
+        self.avg_pool = AvgPooling()
+
+    def forward(self,
+                content_feature,
+                content_mask,
+                rationale_feature,
+                rationale_mask):
+        rationale2content_feature = self.rationale2content_CA(query=rationale_feature,
+                                                              key=content_feature,
+                                                              value=content_feature,
+                                                              mask=content_mask)[0]
+
+        rationale2content_pooling_feature = self.avg_pool(rationale2content_feature, rationale_mask)
+        content2rationale_feature = self.content2rationale_CA(query=content_feature,
+                                                              key=rationale_feature,
+                                                              value=rationale_feature,
+                                                              mask=rationale_mask)[0]
+        content2rationale_pooling_feature = self.avg_pool(content2rationale_feature, content_mask)
+        rationale_useful_pred = self.rationale_useful_predictor(content2rationale_pooling_feature).squeeze(1)
+        llm_judge_pred = self.LLM_judge_predictor(
+            self.rationale_attention_pooling(rationale2content_feature, rationale_mask)
+        )
+        td_rationale_weight = self.rationale_reweight_net(content2rationale_pooling_feature)
+        rationale2content_pooling_feature = td_rationale_weight * rationale2content_pooling_feature
+        return rationale2content_pooling_feature,rationale_useful_pred, llm_judge_pred
+
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean'):

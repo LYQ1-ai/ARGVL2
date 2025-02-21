@@ -5,7 +5,7 @@ import pickle
 import pandas as pd
 import torch
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from transformers import AutoTokenizer, AutoImageProcessor
 
 label_str2int_dict = {
@@ -189,32 +189,29 @@ def merge_caption(df,root_path):
     return df
 
 
-def load_qwen_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,batch_size,shuffle,use_cache,use_image):
+def load_qwen_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
     df = pd.read_csv(f'{root_path}/{data_type}.csv', encoding='utf-8')
     df = merge_caption(df,root_path)
     if use_image:
         df['image_path'] = df['image_id'].apply(lambda x: f'{root_path}/images/{x}_top_img.png')
-    dataset = ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
                          use_image)
-    return DataLoader(dataset,batch_size=batch_size,shuffle=shuffle,num_workers=4,pin_memory=True)
 
 
-def load_gpt_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,batch_size,shuffle,use_cache,use_image):
+def load_gpt_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
     df = pd.read_json(f'{root_path}/{data_type}.json', encoding='utf-8')
-    dataset = ARGDataset(df, use_cache, None, tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, None, tokenizer, image_processor, max_len,
                          use_image)
-    return DataLoader(dataset,batch_size=batch_size,shuffle=shuffle,num_workers=4,pin_memory=True)
 
-def load_gpt_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,batch_size,shuffle,use_cache,use_image):
+def load_gpt_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
     df = pd.read_json(f'{root_path}/{data_type}.json', encoding='utf-8')
     df['label'] = df['label'].apply(lambda x: label_str2int_dict[x])
     df['td_pred'] = df['td_pred'].apply(lambda x: label_str2int_dict[x])
     df['cs_pred'] = df['cs_pred'].apply(lambda x: label_str2int_dict[x])
-    dataset = ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
                          use_image)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4, pin_memory=True)
 
-def load_qwen_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,batch_size,shuffle,use_cache,use_image):
+def load_qwen_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
     def get_image_dict(root_path):
         image_dir_list = [f'{root_path}/nonrumor_images/', f'{root_path}/rumor_images/']
         image_dict = {}
@@ -230,17 +227,11 @@ def load_qwen_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,b
         image_dict = get_image_dict(root_path)
         df['image_path'] = df['image_id'].apply(lambda x: image_dict[x])
 
-    dataset = ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
                          use_image)
-    return DataLoader(
-        dataset,  # 传入自定义的 Dataset
-        batch_size=batch_size,  # 批量大小
-        shuffle=shuffle,  # 是否打乱数据
-        num_workers=4,  # 数据加载线程数
-        pin_memory=True
-    )
 
-def load_qwen_twitter_data(root_path,data_type,tokenizer,image_processor,max_len,batch_size,shuffle,use_cache,use_image):
+
+def load_qwen_twitter_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
     def get_image_path_dict():
         image_dir = f'{root_path}/images/'
         return { f.split('.')[0]: f'{image_dir}/{f}' for f in os.listdir(image_dir)}
@@ -252,30 +243,25 @@ def load_qwen_twitter_data(root_path,data_type,tokenizer,image_processor,max_len
         image_dict = get_image_path_dict()
         df['image_path'] = df['image_id'].apply(lambda image_id: image_dict[image_id])
 
-    dataset = ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
                          use_image)
-    return DataLoader(
-        dataset,  # 传入自定义的 Dataset
-        batch_size=batch_size,  # 批量大小
-        shuffle=True,  # 是否打乱数据
-        num_workers=4,
-        pin_memory=True
-    )
 
+
+from torch.utils.data import DataLoader, DistributedSampler
 
 
 def load_data(name,
               root_path,
               text_encoder_path,
               image_encoder_path,
+              use_image,
               max_len,
               batch_size,
               shuffle,
               use_cache,
-              use_image,
+              **kwargs
               ):
     tokenizer = AutoTokenizer.from_pretrained(text_encoder_path)
-
     image_processor = AutoImageProcessor.from_pretrained(image_encoder_path) if use_image else None
 
     dataset_func_dict = {
@@ -284,13 +270,24 @@ def load_data(name,
         'gpt_weibo': load_gpt_weibo_data,
         "qwen_weibo": load_qwen_weibo_data,
         'qwen_twitter': load_qwen_twitter_data,
-        # TODO: add more datasets here
     }
+
     result = []
-    for data_type in ['train','val','test']:
-        shuffle = shuffle if data_type == 'train' else False
-        result.append(dataset_func_dict[name]
-                      (root_path,data_type,tokenizer,image_processor,max_len,batch_size,shuffle,use_cache,use_image))
+
+    for data_type in ['train', 'val', 'test']:
+        shuffle_param = shuffle if data_type == 'train' else False
+        dataset = dataset_func_dict[name](root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image)
+
+        # 创建DataLoader
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle_param if data_type=='train' else False,  # 非分布式时才打乱
+            num_workers=kwargs.get('num_workers', 4),  # 从kwargs获取num_workers
+            pin_memory=kwargs.get('pin_memory', True)  # 从kwargs获取pin_memory
+        )
+
+        result.append(dataloader)  # 将DataLoader添加到结果列表
 
     return result
 

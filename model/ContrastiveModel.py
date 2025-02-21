@@ -29,19 +29,21 @@ class ContrastiveModel(nn.Module):
             nn.Linear(768, sim_emb),
             nn.ReLU(),
         )
-        self.temperature = temperature
+        self.log_temperature = nn.Parameter(torch.tensor(temperature).log())
 
 
     def forward(self,**kwargs):
         text ,text_mask = kwargs['img_rationale'],kwargs['img_rationale_mask']
         image = kwargs['image']
-        text_pooling_features = self.text_projection(self.text_encoder(text,attention_mask=text_mask).pooler_output)
-        image_pooling_features = self.image_projection(self.image_encoder(image).pooler_output)
+        text_features = self.text_encoder(text,attention_mask=text_mask).pooler_output
+        image_features = self.image_encoder(image).pooler_output
+        text_features = self.text_projection(text_features)
+        image_features = self.image_projection(image_features)
 
-        text_pooling_features = F.normalize(text_pooling_features, p=2, dim=1)
-        image_pooling_features = F.normalize(image_pooling_features, p=2, dim=1)
+        text_features = F.normalize(text_features, p=2, dim=1)
+        image_features = F.normalize(image_features, p=2, dim=1)
 
-        cos_sim_matrix = torch.matmul(text_pooling_features, image_pooling_features.T) * np.exp(self.temperature)
+        cos_sim_matrix = torch.matmul(text_features, image_features.T) * torch.exp(self.log_temperature)
 
         return cos_sim_matrix
 
