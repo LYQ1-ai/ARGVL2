@@ -182,26 +182,40 @@ class SelfAttentionFeatureAggregation(nn.Module):
         return self.attentionPooling(final_feature)
 
 class MultiViewAggregationLayer(nn.Module):
-    def __init__(self, emb_dim, nums_view, dropout=0.1):
+    def __init__(self, emb_dim, nums_view,mask_enable=False):
         super(MultiViewAggregationLayer,self).__init__()
         self.emb_dim = emb_dim
+        self.mask_enable = mask_enable
+        mask_template = torch.tensor([
+            [False,False,False,True,True],
+            [False,False,False,True,True],
+            [False,False,False,False,False],
+            [True,True,False,False,False],
+            [True,True,False,False,False]
+        ])[:nums_view,:nums_view]
+        self.register_buffer('mask_template', mask_template)
         self.aggregator = nn.Sequential(
             nn.Linear(emb_dim, nums_view, bias=False),
             nn.BatchNorm1d(nums_view),
             nn.ReLU(),
-            nn.Dropout(dropout)
         )
 
     def forward(self, multi_features):
-        attention_weight = nn.functional.softmax(self.aggregator(multi_features).transpose(1,2),dim=-1)
+        attention_scores = self.aggregator(multi_features).transpose(1,2)
+        if self.mask_enable:
+            attention_scores = attention_scores.masked_fill(self.mask_template.to(device=attention_scores.device),float('-inf'))
+        attention_weight = nn.functional.softmax(attention_scores,dim=-1) # attention_weight shape = (batch_size,nums_view,nums_view)
         return torch.bmm(attention_weight,multi_features)
+
+
+
 
 
 class MultiViewAggregation(nn.Module):
 
-    def __init__(self, emb_dim, nums_view, dropout=0.1,layers=1):
+    def __init__(self, emb_dim, nums_view,layers=1,mask_enable=False):
         super(MultiViewAggregation,self).__init__()
-        self.MultiViewAggregationLayers = nn.ModuleList([MultiViewAggregationLayer(emb_dim,nums_view,dropout) for _ in range(layers)])
+        self.MultiViewAggregationLayers = nn.ModuleList([MultiViewAggregationLayer(emb_dim,nums_view,mask_enable) for _ in range(layers)])
         self.attentionPooling = AttentionPooling(emb_dim)
 
     def forward(self, multi_features):
@@ -209,6 +223,7 @@ class MultiViewAggregation(nn.Module):
             multi_features = blk(multi_features)
 
         return self.attentionPooling(multi_features)
+
 
 
 

@@ -81,8 +81,9 @@ class ARGVL2Model(nn.Module):
         self.img_rationale_fusion = layers.BaseRationaleFusion(config)
 
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
+        # self.image_content_attention_pooling = AttentionPooling(config['emb_dim'])
 
-        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,dropout=config['dropout'],layers=2)
+        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2,mask_enable=True)
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
 
@@ -119,6 +120,7 @@ class ARGVL2Model(nn.Module):
         """
         content_mask = kwargs['content_mask']
         content_features = self.content_encoder(kwargs['content'], attention_mask=content_mask).last_hidden_state
+        # image_content_features = self.image_encoder(kwargs['image']).last_hidden_state
 
         td_rationale_mask = kwargs['td_rationale_mask']
         itc_rationale_mask = kwargs['itc_rationale_mask']
@@ -174,8 +176,8 @@ class ARGVL2Model(nn.Module):
             res['img_rationale_useful_pred'] = img_rationale_useful_pred
 
 
-        all_features.append(
-            self.content_attention_pooling(content_features,content_mask).unsqueeze(1)
+        all_features.insert(
+            0,self.content_attention_pooling(content_features,content_mask).unsqueeze(1)
         )
 
 
