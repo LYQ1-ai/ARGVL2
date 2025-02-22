@@ -218,8 +218,9 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, rational
 
 
         loss = loss_classify
-        loss += config['train']['rationale_usefulness_evaluator_weight'] * loss_useful_pred / len(rationale_names)
-        loss += config['train']['llm_judgment_predictor_weight'] * loss_judgement_pred / len(rationale_names)
+        if len(rationale_names) > 0:
+            loss += config['train']['rationale_usefulness_evaluator_weight'] * loss_useful_pred / len(rationale_names)
+            loss += config['train']['llm_judgment_predictor_weight'] * loss_judgement_pred / len(rationale_names)
 
         optimizer.zero_grad()
         loss.backward()

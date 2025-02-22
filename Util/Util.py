@@ -216,49 +216,50 @@ class MetricsRecorder:
         self.classifier_labels.append(batch_label)
         self.classifier_predictions.append(res['classify_pred'])
 
-
-        self.llm_judgment_labels.append(
-            torch.cat(
-                [ batch_data[f'{r_name}_pred']  for r_name in rationale_names], dim=0
+        if len(rationale_names) > 0:
+            self.llm_judgment_labels.append(
+                torch.cat(
+                    [batch_data[f'{r_name}_pred']  for r_name in rationale_names], dim=0
+                )
             )
-        )
-        llm_judgment_prediction = torch.cat(
-            [res[f'{r_name}_judge_pred'] for r_name in rationale_names]
-            ,dim=0)
-        self.llm_judgment_predictions.append(llm_judgment_prediction)
-        self.rationale_usefulness_labels.append(torch.cat(
-            [batch_data[f'{r_name}_acc'] for r_name in rationale_names],
-            dim=0
-        ))
-        self.rationale_usefulness_predictions.append(
-            torch.cat(
-                [res[f'{r_name}_rationale_useful_pred']for r_name in rationale_names]
-                  , dim=0
+            llm_judgment_prediction = torch.cat(
+                [res[f'{r_name}_judge_pred'] for r_name in rationale_names]
+                ,dim=0)
+            self.llm_judgment_predictions.append(llm_judgment_prediction)
+            self.rationale_usefulness_labels.append(torch.cat(
+                [batch_data[f'{r_name}_acc'] for r_name in rationale_names],
+                dim=0
             ))
+            self.rationale_usefulness_predictions.append(
+                torch.cat(
+                    [res[f'{r_name}_rationale_useful_pred']for r_name in rationale_names]
+                      , dim=0
+                ))
 
 
     def get_metrics(self):
+
         self.classifier_labels = torch.cat(self.classifier_labels, dim=0).cpu().numpy()
         self.classifier_predictions = (torch.cat(self.classifier_predictions, dim=0) > 0.5).long().cpu().numpy()
-        self.llm_judgment_labels = torch.cat(self.llm_judgment_labels, dim=0).cpu().numpy()
-        self.llm_judgment_predictions = torch.cat(self.llm_judgment_predictions, dim=0).argmax(dim=1).cpu().numpy()
-        self.rationale_usefulness_labels = torch.cat(self.rationale_usefulness_labels, dim=0).cpu().numpy()
-        self.rationale_usefulness_predictions = (torch.cat(self.rationale_usefulness_predictions, dim=0) > 0.5).long().cpu().numpy()
-
         classifier_metrics = cal_binary_metrics(self.classifier_predictions,
                                                 self.classifier_labels,
                                                 label_names=classified_label_int2str_dict
-                                                                     )
+                                                )
+        res_metrics = {'classifier': classifier_metrics}
+        if len(self.llm_judgment_labels) > 0:
+            self.llm_judgment_labels = torch.cat(self.llm_judgment_labels, dim=0).cpu().numpy()
+            self.llm_judgment_predictions = torch.cat(self.llm_judgment_predictions, dim=0).argmax(dim=1).cpu().numpy()
+            llm_judgment_metrics = cal_binary_metrics(self.llm_judgment_predictions,
+                                                      self.llm_judgment_labels,
+                                                      label_names=classified_label_int2str_dict)
+            res_metrics['llm_judgment'] = llm_judgment_metrics
+        if len(self.rationale_usefulness_labels) > 0:
+            self.rationale_usefulness_labels = torch.cat(self.rationale_usefulness_labels, dim=0).cpu().numpy()
+            self.rationale_usefulness_predictions = (torch.cat(self.rationale_usefulness_predictions, dim=0) > 0.5).long().cpu().numpy()
+            rationale_usefulness_metrics = cal_binary_metrics(self.rationale_usefulness_predictions,
+                                                              self.rationale_usefulness_labels,
+                                                              label_names={0: 'unuseful', 1: 'useful'})  # TODO 动态设置标签名称
+            res_metrics['rationale_usefulness'] = rationale_usefulness_metrics
 
-        llm_judgment_metrics = cal_binary_metrics(self.llm_judgment_predictions,
-                                                  self.llm_judgment_labels,
-                                                  label_names=classified_label_int2str_dict)
-        rationale_usefulness_metrics = cal_binary_metrics(self.rationale_usefulness_predictions,
-                                                          self.rationale_usefulness_labels,
-                                                          label_names={0:'unuseful',1:'useful'}) # TODO 动态设置标签名称
 
-        return {
-            'classifier': classifier_metrics,
-            'llm_judgment': llm_judgment_metrics,
-            'rationale_usefulness': rationale_usefulness_metrics
-        }
+        return res_metrics
