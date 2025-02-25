@@ -76,9 +76,14 @@ class ARGVL2Model(nn.Module):
         self.image_encoder = ARGVL2Model.get_image_encoder(config,True)
         self.caption_content_fusion = DualCrossAttention(config['emb_dim'], config['num_heads'], dropout=config['dropout'], layers=1)
         self.rationale_set = set(config['rationale_name'])
-        self.td_rationale_fusion = layers.BaseRationaleFusion(config)
-        self.itc_rationale_fusion = layers.BaseRationaleFusion(config)
-        self.img_rationale_fusion = layers.BaseRationaleFusion(config)
+        if 'td' in self.rationale_set:
+            self.td_rationale_fusion = layers.BaseRationaleFusion(config)
+        if 'itc' in self.rationale_set:
+            self.itc_rationale_fusion = layers.BaseRationaleFusion(config)
+        if 'img' in self.rationale_set:
+            self.img_rationale_fusion = layers.BaseRationaleFusion(config)
+        if 'cs' in self.rationale_set:
+            self.cs_rationale_fusion = layers.BaseRationaleFusion(config)
 
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
         # self.image_content_attention_pooling = AttentionPooling(config['emb_dim'])
@@ -123,11 +128,26 @@ class ARGVL2Model(nn.Module):
         # image_content_features = self.image_encoder(kwargs['image']).last_hidden_state
 
         td_rationale_mask = kwargs['td_rationale_mask']
+        cs_rationale_mask = kwargs['cs_rationale_mask']
         itc_rationale_mask = kwargs['itc_rationale_mask']
         img_rationale_mask = kwargs['img_rationale_mask']
 
         all_features = []
         res = {}
+
+        if 'cs' in self.rationale_set:
+            cs_rationale_features = self.rationale_encoder(kwargs['cs_rationale'],
+                                                           attention_mask=cs_rationale_mask).last_hidden_state
+            cs_rationale_pooling_feature, cs_rationale_useful_pred, cs_judge_pred = self.cs_rationale_fusion(
+                content_feature=content_features,
+                content_mask=content_mask,
+                rationale_feature=cs_rationale_features,
+                rationale_mask=cs_rationale_mask,
+            )
+            all_features.append(cs_rationale_pooling_feature.unsqueeze(1))
+            res['cs_judge_pred'] = cs_judge_pred
+            res['cs_rationale_useful_pred'] = cs_rationale_useful_pred
+
 
         if 'td' in self.rationale_set:
             td_rationale_features = self.rationale_encoder(kwargs['td_rationale'],
