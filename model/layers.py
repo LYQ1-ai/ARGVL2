@@ -12,23 +12,30 @@ from torch.distributions import Independent, Normal, kl_divergence
 from torch.nn.functional import softplus
 
 
-def contrastive_loss(logits):
-    n = logits.size(0)  # 获取批次大小
+# def contrastive_loss(logits):
+#     n = logits.size(0)  # 获取批次大小
+#
+#     # 生成标签 (0 到 n-1)
+#     labels = torch.arange(n, device=logits.device)
+#
+#     # 计算 loss_i: 沿 axis=0 的交叉熵损失
+#     loss_i = F.cross_entropy(logits, labels)
+#
+#     # 计算 loss_t: 沿 axis=1 的交叉熵损失
+#     # 转置 logits 矩阵以沿不同轴计算
+#     loss_t = F.cross_entropy(logits.T, labels)
+#
+#     # 平均损失
+#     loss = (loss_i + loss_t) / 2
+#
+#     return loss
 
-    # 生成标签 (0 到 n-1)
-    labels = torch.arange(n, device=logits.device)
+def contrastive_loss(logits,label):
+    batch_size = logits.size(0)
+    label_full = torch.zeros_like(logits, dtype=torch.long,device=logits.device)
+    label_full[range(batch_size),range(batch_size)] = label
+    return F.cross_entropy(logits,label_full.float())
 
-    # 计算 loss_i: 沿 axis=0 的交叉熵损失
-    loss_i = F.cross_entropy(logits, labels)
-
-    # 计算 loss_t: 沿 axis=1 的交叉熵损失
-    # 转置 logits 矩阵以沿不同轴计算
-    loss_t = F.cross_entropy(logits.T, labels)
-
-    # 平均损失
-    loss = (loss_i + loss_t) / 2
-
-    return loss
 
 class BaseRationaleFusion(nn.Module):
 

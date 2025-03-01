@@ -16,10 +16,9 @@ from model.layers import contrastive_loss
 
 
 class ContrastiveModel(nn.Module):
-
     def __init__(self, text_encoder_path,image_encoder_path,sim_emb,temperature=0.02,**kwargs):
         super(ContrastiveModel, self).__init__()
-        self.text_encoder = AutoModel.from_pretrained(text_encoder_path)
+        self.text_encoder = AutoModel.from_pretrained(text_encoder_path).requires_grad_(False)
         self.text_projection = nn.Sequential(
             nn.Linear(768, sim_emb),
             nn.ReLU(),
@@ -29,23 +28,51 @@ class ContrastiveModel(nn.Module):
             nn.Linear(768, sim_emb),
             nn.ReLU(),
         )
-        self.log_temperature = nn.Parameter(torch.tensor(temperature).log())
-
+        self.temperature = nn.Parameter(torch.tensor(temperature))
 
     def forward(self,**kwargs):
-        text ,text_mask = kwargs['img_rationale'],kwargs['img_rationale_mask']
         image = kwargs['image']
-        text_features = self.text_encoder(text,attention_mask=text_mask).pooler_output
-        image_features = self.image_encoder(image).pooler_output
-        text_features = self.text_projection(text_features)
-        image_features = self.image_projection(image_features)
+        text,mask = kwargs['img_rationale'],kwargs['img_rationale_mask']
 
+        image_features = self.image_projection(self.image_encoder(image).pooler_output)
+        text_features = self.text_projection(self.text_encoder(text, attention_mask=mask).pooler_output)
         text_features = F.normalize(text_features, p=2, dim=1)
         image_features = F.normalize(image_features, p=2, dim=1)
-
-        cos_sim_matrix = torch.matmul(text_features, image_features.T) * torch.exp(self.log_temperature)
-
+        cos_sim_matrix = torch.matmul(text_features, image_features.T) / self.temperature
         return cos_sim_matrix
+
+
+# class ContrastiveModel(nn.Module):
+#
+#     def __init__(self, text_encoder_path,image_encoder_path,sim_emb,temperature=0.02,**kwargs):
+#         super(ContrastiveModel, self).__init__()
+#         self.text_encoder = AutoModel.from_pretrained(text_encoder_path)
+#         self.text_projection = nn.Sequential(
+#             nn.Linear(768, sim_emb),
+#             nn.ReLU(),
+#         )
+#         self.image_encoder = AutoModel.from_pretrained(image_encoder_path)
+#         self.image_projection = nn.Sequential(
+#             nn.Linear(768, sim_emb),
+#             nn.ReLU(),
+#         )
+#         self.log_temperature = nn.Parameter(torch.tensor(temperature).log())
+#
+#
+#     def forward(self,**kwargs):
+#         text ,text_mask = kwargs['img_rationale'],kwargs['img_rationale_mask']
+#         image = kwargs['image']
+#         text_features = self.text_encoder(text,attention_mask=text_mask).pooler_output
+#         image_features = self.image_encoder(image).pooler_output
+#         text_features = self.text_projection(text_features)
+#         image_features = self.image_projection(image_features)
+#
+#         text_features = F.normalize(text_features, p=2, dim=1)
+#         image_features = F.normalize(image_features, p=2, dim=1)
+#
+#         cos_sim_matrix = torch.matmul(text_features, image_features.T) * torch.exp(self.log_temperature)
+#
+#         return cos_sim_matrix
 
 def train_epoch(model, loss_fn, train_loader, optimizer, epoch,device):
     print('---------- epoch {} ----------'.format(epoch))
@@ -57,9 +84,10 @@ def train_epoch(model, loss_fn, train_loader, optimizer, epoch,device):
             batch,
             device
         )
+        label = batch_data['img_acc']
 
         cos_sim_matrix = model(**batch_data)
-        loss = loss_fn(cos_sim_matrix)
+        loss = loss_fn(cos_sim_matrix,label)
 
 
         optimizer.zero_grad()
@@ -190,8 +218,9 @@ class Trainer:
                     batch,
                     device
                 )
+                label = batch_data['img_acc']
                 cos_sim_matrix = self.model(**batch_data)
-                loss = loss_fn(cos_sim_matrix)
+                loss = loss_fn(cos_sim_matrix,label)
                 avg_loss.add(loss.item(),cos_sim_matrix.size(0))
 
         result_metrics['val_loss'] = avg_loss.item()
