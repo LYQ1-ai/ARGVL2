@@ -79,11 +79,13 @@ class BaseRationaleFusion(nn.Module):
         content2rationale_pooling_feature = self.avg_pool(content2rationale_feature, content_mask)
         rationale_useful_pred = self.rationale_useful_predictor(content2rationale_pooling_feature).squeeze(1)
         llm_judge_pred = self.LLM_judge_predictor(
-            self.rationale_attention_pooling(rationale2content_feature, rationale_mask)
+            self.rationale_attention_pooling(rationale_feature, rationale_mask)
         )
         rationale_weight = self.rationale_reweight_net(content2rationale_pooling_feature)
         rationale2content_pooling_feature = rationale_weight * rationale2content_pooling_feature
         return rationale2content_pooling_feature,rationale_useful_pred, llm_judge_pred
+
+
 
 
 class VAERationaleFusion(nn.Module):
@@ -173,6 +175,10 @@ class RationaleReweightNet(nn.Module):
 
         return kl_symmetric
 
+
+class FrequencyRationaleReweightNet(nn.Module):
+    def __init__(self,emb_dim,dropout):
+        super().__init__()
 
 
 
