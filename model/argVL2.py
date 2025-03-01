@@ -5,19 +5,16 @@ import os
 import time
 
 import numpy as np
-import torch.nn.functional as F
 import torch
 from tensorboardX import SummaryWriter
 from torch import nn
 from tqdm import tqdm
 from transformers import AutoModel, BertModel, Swinv2Model, RobertaModel
 
-import Util.Util
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
 from model import layers
-from model.layers import AttentionPooling, Classifier, AvgPooling, MultiHeadCrossAttention, DualCrossAttention, \
-    FocalLoss, MultiViewAggregation, ImageCaptionGate
+from model.layers import AttentionPooling, Classifier, DualCrossAttention,FocalLoss, MultiViewAggregation
 
 
 def freeze_bert_params(model):
@@ -67,6 +64,22 @@ class ARGVL2Model(nn.Module):
         freeze_pretrained_params(image_encoder)
         return image_encoder
 
+    @staticmethod
+    def get_multi_view_mask(mask, keep_col_row: list[int]):
+        """
+        保留mask矩阵中指定的行和列，生成子矩阵。
+
+        Args:
+            mask: 二维数组（方阵），通常表示多视角之间的关系。
+            keep_col_row: 需要保留的行和列的索引列表。
+
+        Returns:
+            保留指定行列后的子矩阵。
+        """
+        # 使用 np.ix_ 生成正确的网格索引，确保返回二维子矩阵
+        return mask[np.ix_(keep_col_row, keep_col_row)]
+
+
     def __init__(self, config, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -87,8 +100,23 @@ class ARGVL2Model(nn.Module):
 
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
         # self.image_content_attention_pooling = AttentionPooling(config['emb_dim'])
-
-        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2,mask_enable=True)
+        view_index = {
+            'td':1,
+            'itc':2,
+            'img':3,
+        }
+        keep_row_col = [0,]
+        keep_row_col.extend([index for r_name,index in view_index.items() if r_name in self.rationale_set])
+        mask_template = ARGVL2Model.get_multi_view_mask(torch.tensor([
+            [False, False, False, True, True],
+            [False, False, False, True, True],
+            [False, False, False, False, False],
+            [True, True, False, False, False],
+            [True, True, False, False, False]
+        ]),keep_row_col)
+        self.register_buffer('mask_template', mask_template)
+        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2)
+        # self.featureAggregator = AttentionPooling(config['emb_dim'])
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
 
@@ -166,10 +194,14 @@ class ARGVL2Model(nn.Module):
         if 'itc' in self.rationale_set:
             itc_rationale_features = self.rationale_encoder(kwargs['itc_rationale'],
                                                             attention_mask=itc_rationale_mask).last_hidden_state
-            caption_mask = kwargs['caption_mask']
-            caption_features = self.content_encoder(kwargs['caption'], attention_mask=caption_mask).last_hidden_state
-            multi_feature, multi_mask = self.caption_content_fusion(caption_features, caption_mask, content_features,
-                                                                    content_mask)
+            # caption_mask = kwargs['caption_mask']
+            # caption_features = self.content_encoder(kwargs['caption'], attention_mask=caption_mask).last_hidden_state
+            # multi_feature, multi_mask = self.caption_content_fusion(caption_features, caption_mask, content_features,
+            #                                                         content_mask)
+            multi_mask = torch.cat([kwargs['caption_mask'],content_mask],dim=1)
+            multi_feature = self.content_encoder(
+                torch.cat([kwargs['caption'],kwargs['content']], dim=1),attention_mask=multi_mask
+            ).last_hidden_state
             itc_rationale_pooling_feature,itc_rationale_useful_pred,itc_judge_pred = self.itc_rationale_fusion(
                 content_feature=multi_feature,
                 content_mask=multi_mask,
@@ -201,7 +233,8 @@ class ARGVL2Model(nn.Module):
         )
 
 
-        final_feature = self.featureAggregator(torch.cat(all_features,dim=1))
+        final_feature = self.featureAggregator(torch.cat(all_features,dim=1),mask=self.mask_template)
+        # final_feature = self.featureAggregator(torch.cat(all_features,dim=1))
 
         label_pred = self.classifier(final_feature).squeeze(1)
         res['classify_pred'] = label_pred

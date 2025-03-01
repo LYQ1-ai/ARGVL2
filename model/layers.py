@@ -7,7 +7,9 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from torch import sigmoid
+from torch.distributions import Independent, Normal, kl_divergence
+from torch.nn.functional import softplus
 
 
 def contrastive_loss(logits):
@@ -79,9 +81,100 @@ class BaseRationaleFusion(nn.Module):
         llm_judge_pred = self.LLM_judge_predictor(
             self.rationale_attention_pooling(rationale2content_feature, rationale_mask)
         )
-        td_rationale_weight = self.rationale_reweight_net(content2rationale_pooling_feature)
-        rationale2content_pooling_feature = td_rationale_weight * rationale2content_pooling_feature
+        rationale_weight = self.rationale_reweight_net(content2rationale_pooling_feature)
+        rationale2content_pooling_feature = rationale_weight * rationale2content_pooling_feature
         return rationale2content_pooling_feature,rationale_useful_pred, llm_judge_pred
+
+
+class VAERationaleFusion(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+        self.content2rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+
+        self.rationale_useful_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                           nn.ReLU(),
+                                                           nn.Linear(config['mlp']['dims'][-1], 1),
+                                                           nn.Sigmoid()
+                                                           )
+        self.LLM_judge_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                nn.ReLU(),
+                                                nn.Linear(config['mlp']['dims'][-1], 3))
+        self.rationale_attention_pooling = AttentionPooling(config['emb_dim'])
+        self.rationale_reweight_net = RationaleReweightNet(config['emb_dim'],64,dropout=config['dropout'])
+        self.avg_pool = AvgPooling()
+
+    def forward(self,
+                content_feature,
+                content_mask,
+                rationale_feature,
+                rationale_mask):
+        rationale2content_feature = self.rationale2content_CA(query=rationale_feature,
+                                                              key=content_feature,
+                                                              value=content_feature,
+                                                              mask=content_mask)[0]
+
+        rationale2content_pooling_feature = self.avg_pool(rationale2content_feature, rationale_mask)
+        content2rationale_feature = self.content2rationale_CA(query=content_feature,
+                                                              key=rationale_feature,
+                                                              value=rationale_feature,
+                                                              mask=rationale_mask)[0]
+        content2rationale_pooling_feature = self.avg_pool(content2rationale_feature, content_mask)
+        rationale_useful_pred = self.rationale_useful_predictor(content2rationale_pooling_feature).squeeze(1)
+        llm_judge_pred = self.LLM_judge_predictor(
+            self.rationale_attention_pooling(rationale2content_feature, rationale_mask)
+        )
+        rationale_weight = self.rationale_reweight_net(r_pooling_feature=rationale2content_pooling_feature,c_pooling_feature=content2rationale_pooling_feature).unsqueeze(-1)
+        rationale2content_pooling_feature = rationale_weight * rationale2content_pooling_feature
+        return rationale2content_pooling_feature,rationale_useful_pred, llm_judge_pred
+
+
+
+class VAEEncoder(nn.Module):
+    def __init__(self, emb_dim, latent_dim,dropout=0.1):
+        super().__init__()
+        self.mu_net =  nn.Sequential(
+            nn.Linear(emb_dim, emb_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(emb_dim // 2, latent_dim),
+        )  # 输出均值
+        self.logvar_net =  nn.Sequential(
+            nn.Linear(emb_dim, emb_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(emb_dim // 2, latent_dim),
+        )  # 输出对数方差
+
+    def forward(self, x):
+        mu = self.mu_net(x)
+        log_var = self.logvar_net(x)
+        sigma = torch.exp(log_var * 0.5) + 1e-7
+        return Independent(Normal(loc=mu, scale=sigma), 1)
+
+class RationaleReweightNet(nn.Module):
+
+    def __init__(self,emb_dim, latent_dim,dropout):
+        super().__init__()
+        self.rationale_vae = VAEEncoder(emb_dim, latent_dim,dropout)
+        self.content_vae = VAEEncoder(emb_dim, latent_dim,dropout)
+
+    def forward(self,r_pooling_feature,c_pooling_feature):
+        """
+        x shape (batch_size, emb_dim)
+        """
+        p_z1_given_r = self.rationale_vae(r_pooling_feature)
+        p_z2_given_c = self.content_vae(c_pooling_feature)
+
+        # 对称 KL 散度
+        kl_1_2 = torch.distributions.kl_divergence(p_z1_given_r, p_z2_given_c)
+        kl_2_1 = torch.distributions.kl_divergence(p_z2_given_c, p_z1_given_r)
+        kl_symmetric = sigmoid(0.5 * (kl_1_2 + kl_2_1))
+
+        return kl_symmetric
+
+
+
 
 
 class FocalLoss(nn.Module):
@@ -182,28 +275,19 @@ class SelfAttentionFeatureAggregation(nn.Module):
         return self.attentionPooling(final_feature)
 
 class MultiViewAggregationLayer(nn.Module):
-    def __init__(self, emb_dim, nums_view,mask_enable=False):
+    def __init__(self, emb_dim, nums_view):
         super(MultiViewAggregationLayer,self).__init__()
         self.emb_dim = emb_dim
-        self.mask_enable = mask_enable
-        mask_template = torch.tensor([
-            [False,False,False,True,True],
-            [False,False,False,True,True],
-            [False,False,False,False,False],
-            [True,True,False,False,False],
-            [True,True,False,False,False]
-        ])[:nums_view,:nums_view]
-        self.register_buffer('mask_template', mask_template)
         self.aggregator = nn.Sequential(
             nn.Linear(emb_dim, nums_view, bias=False),
             nn.BatchNorm1d(nums_view),
             nn.ReLU(),
         )
 
-    def forward(self, multi_features):
+    def forward(self, multi_features,mask=None):
         attention_scores = self.aggregator(multi_features).transpose(1,2)
-        if self.mask_enable:
-            attention_scores = attention_scores.masked_fill(self.mask_template.to(device=attention_scores.device),float('-inf'))
+        if mask is not None:
+            attention_scores = attention_scores.masked_fill(mask.to(device=attention_scores.device),float('-inf'))
         attention_weight = nn.functional.softmax(attention_scores,dim=-1) # attention_weight shape = (batch_size,nums_view,nums_view)
         return torch.bmm(attention_weight,multi_features)
 
@@ -213,14 +297,14 @@ class MultiViewAggregationLayer(nn.Module):
 
 class MultiViewAggregation(nn.Module):
 
-    def __init__(self, emb_dim, nums_view,layers=1,mask_enable=False):
+    def __init__(self, emb_dim, nums_view,layers=1):
         super(MultiViewAggregation,self).__init__()
-        self.MultiViewAggregationLayers = nn.ModuleList([MultiViewAggregationLayer(emb_dim,nums_view,mask_enable) for _ in range(layers)])
+        self.MultiViewAggregationLayers = nn.ModuleList([MultiViewAggregationLayer(emb_dim,nums_view) for _ in range(layers)])
         self.attentionPooling = AttentionPooling(emb_dim)
 
-    def forward(self, multi_features):
+    def forward(self, multi_features,mask=None):
         for blk in self.MultiViewAggregationLayers:
-            multi_features = blk(multi_features)
+            multi_features = blk(multi_features,mask)
 
         return self.attentionPooling(multi_features)
 

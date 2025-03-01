@@ -84,10 +84,10 @@ def load_image_list(image_path_list, image_processor):
 class ARGDataset(Dataset):
 
 
-    def text_data2tensor(self,data,max_len,tokenizer,rationale_names):
+    def text_data2tensor(self,data,max_len,tokenizer,rationale_names,rationale_max_len):
         data['content'],data['content_mask'] = texts2tensor(data['content'],max_len,tokenizer)
         for rationale_name in rationale_names:
-            data[f'{rationale_name}_rationale'],data[f'{rationale_name}_rationale_mask'] = texts2tensor(data[f'{rationale_name}_rationale'],max_len,tokenizer)
+            data[f'{rationale_name}_rationale'],data[f'{rationale_name}_rationale_mask'] = texts2tensor(data[f'{rationale_name}_rationale'],rationale_max_len,tokenizer)
             data[f'{rationale_name}_pred'] = torch.tensor(data[f'{rationale_name}_pred'], dtype=torch.long)
             data[f'{rationale_name}_acc'] = torch.tensor(data[f'{rationale_name}_acc'], dtype=torch.long)
         if 'caption' in data.keys():
@@ -98,7 +98,7 @@ class ARGDataset(Dataset):
 
 
 
-    def __init__(self, df,use_cache,image_cache_path,tokenizer,image_processor,max_len,use_image):
+    def __init__(self, df,use_cache,image_cache_path,tokenizer,image_processor,max_len,rationale_max_len,use_image):
         """
         :param df: {
             "content":"",
@@ -125,7 +125,7 @@ class ARGDataset(Dataset):
         self.data = df.to_dict("list")
         self.rationale_names = [col_name.split('_')[0] for col_name in self.data.keys() if col_name.endswith("_rationale")]
         self.num_rationales = len(self.rationale_names)
-        self.data = self.text_data2tensor(self.data, max_len, tokenizer,self.rationale_names) # 文本数据转换为tensor
+        self.data = self.text_data2tensor(self.data, max_len, tokenizer,self.rationale_names,rationale_max_len=rationale_max_len) # 文本数据转换为tensor
         # 读取图片数据
         if use_image:
             if use_cache and os.path.exists(image_cache_path):
@@ -189,29 +189,29 @@ def merge_caption(df,root_path):
     return df
 
 
-def load_qwen_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
+def load_qwen_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,rationale_max_len,use_cache,use_image):
     df = pd.read_csv(f'{root_path}/{data_type}.csv', encoding='utf-8')
     df = merge_caption(df,root_path)
     if use_image:
         df['image_path'] = df['image_id'].apply(lambda x: f'{root_path}/images/{x}_top_img.png')
-    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,rationale_max_len,
                          use_image)
 
 
-def load_gpt_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
+def load_gpt_gossipcop_data(root_path,data_type,tokenizer,image_processor,max_len,rationale_max_len,use_cache,use_image):
     df = pd.read_json(f'{root_path}/{data_type}.json', encoding='utf-8')
-    return ARGDataset(df, use_cache, None, tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, None, tokenizer, image_processor, max_len,rationale_max_len,
                          use_image)
 
-def load_gpt_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
+def load_gpt_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,rationale_max_len,use_cache,use_image):
     df = pd.read_json(f'{root_path}/{data_type}.json', encoding='utf-8')
     df['label'] = df['label'].apply(lambda x: label_str2int_dict[x])
     df['td_pred'] = df['td_pred'].apply(lambda x: label_str2int_dict[x])
     df['cs_pred'] = df['cs_pred'].apply(lambda x: label_str2int_dict[x])
-    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,rationale_max_len,
                          use_image)
 
-def load_qwen_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
+def load_qwen_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,rationale_max_len,use_cache,use_image):
     def get_image_dict(root_path):
         image_dir_list = [f'{root_path}/nonrumor_images/', f'{root_path}/rumor_images/']
         image_dict = {}
@@ -227,11 +227,11 @@ def load_qwen_weibo_data(root_path,data_type,tokenizer,image_processor,max_len,u
         image_dict = get_image_dict(root_path)
         df['image_path'] = df['image_id'].apply(lambda x: image_dict[x])
 
-    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,rationale_max_len,
                          use_image)
 
 
-def load_qwen_twitter_data(root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image):
+def load_qwen_twitter_data(root_path,data_type,tokenizer,image_processor,max_len,rationale_max_len,use_cache,use_image):
     def get_image_path_dict():
         image_dir = f'{root_path}/images/'
         return { f.split('.')[0]: f'{image_dir}/{f}' for f in os.listdir(image_dir)}
@@ -243,7 +243,7 @@ def load_qwen_twitter_data(root_path,data_type,tokenizer,image_processor,max_len
         image_dict = get_image_path_dict()
         df['image_path'] = df['image_id'].apply(lambda image_id: image_dict[image_id])
 
-    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,
+    return ARGDataset(df, use_cache, f'{root_path}/cache/{data_type}_image_cache.pt', tokenizer, image_processor, max_len,rationale_max_len,
                          use_image)
 
 
@@ -256,6 +256,7 @@ def load_data(name,
               image_encoder_path,
               use_image,
               max_len,
+              rationale_max_len,
               batch_size,
               shuffle,
               use_cache,
@@ -276,7 +277,7 @@ def load_data(name,
 
     for data_type in ['train', 'val', 'test']:
         shuffle_param = shuffle if data_type == 'train' else False
-        dataset = dataset_func_dict[name](root_path,data_type,tokenizer,image_processor,max_len,use_cache,use_image)
+        dataset = dataset_func_dict[name](root_path,data_type,tokenizer,image_processor,max_len,rationale_max_len,use_cache,use_image)
 
         # 创建DataLoader
         dataloader = DataLoader(
