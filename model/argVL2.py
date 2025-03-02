@@ -85,9 +85,10 @@ class ARGVL2Model(nn.Module):
 
         self.content_encoder = ARGVL2Model.get_text_encoder(config)
         self.rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config,True)
+        # self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config)
+        self.itc_rationale_encoder = ARGVL2Model.get_text_encoder(config)
+        self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config)
         self.image_encoder = ARGVL2Model.get_image_encoder(config,True)
-        self.caption_content_fusion = DualCrossAttention(config['emb_dim'], config['num_heads'], dropout=config['dropout'], layers=1)
         self.rationale_set = set(config['rationale_name'])
         if 'td' in self.rationale_set:
             self.td_rationale_fusion = layers.BaseRationaleFusion(config)
@@ -115,8 +116,8 @@ class ARGVL2Model(nn.Module):
             [True, True, False, False, False]
         ]),keep_row_col)
         self.register_buffer('mask_template', mask_template)
-        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2)
-        # self.featureAggregator = AttentionPooling(config['emb_dim'])
+        # self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2)
+        self.featureAggregator = AttentionPooling(config['emb_dim'])
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
 
@@ -194,10 +195,6 @@ class ARGVL2Model(nn.Module):
         if 'itc' in self.rationale_set:
             itc_rationale_features = self.rationale_encoder(kwargs['itc_rationale'],
                                                             attention_mask=itc_rationale_mask).last_hidden_state
-            # caption_mask = kwargs['caption_mask']
-            # caption_features = self.content_encoder(kwargs['caption'], attention_mask=caption_mask).last_hidden_state
-            # multi_feature, multi_mask = self.caption_content_fusion(caption_features, caption_mask, content_features,
-            #                                                         content_mask)
             multi_mask = torch.cat([kwargs['caption_mask'],content_mask],dim=1)
             multi_feature = self.content_encoder(
                 torch.cat([kwargs['caption'],kwargs['content']], dim=1),attention_mask=multi_mask
@@ -233,8 +230,8 @@ class ARGVL2Model(nn.Module):
         )
 
 
-        final_feature = self.featureAggregator(torch.cat(all_features,dim=1),mask=self.mask_template)
-        # final_feature = self.featureAggregator(torch.cat(all_features,dim=1))
+        # final_feature = self.featureAggregator(torch.cat(all_features,dim=1),mask=self.mask_template)
+        final_feature = self.featureAggregator(torch.cat(all_features,dim=1))
 
         label_pred = self.classifier(final_feature).squeeze(1)
         res['classify_pred'] = label_pred
@@ -266,7 +263,7 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, rational
         loss_useful_pred = 0.0
         loss_judgement_pred = 0.0
         for r_name in rationale_names:
-            loss_useful_pred += loss_useful_fn(res[f'{r_name}_rationale_useful_pred'], batch_data[f'{r_name}_acc'])
+            loss_useful_pred += loss_useful_fn(res[f'{r_name}_rationale_useful_pred'], batch_data[f'{r_name}_acc'].float())
             loss_judgement_pred += loss_judge_fn(res[f'{r_name}_judge_pred'], batch_data[f'{r_name}_pred'])
 
 
