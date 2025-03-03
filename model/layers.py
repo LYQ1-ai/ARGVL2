@@ -317,7 +317,10 @@ class MultiViewAggregation(nn.Module):
 
     def forward(self, multi_features,mask=None):
         for blk in self.MultiViewAggregationLayers:
-            multi_features = blk(multi_features,mask)
+            residual = multi_features
+            # TODO 添加残差
+            multi_features = blk(multi_features, mask)
+            multi_features = residual + multi_features
 
         return self.attentionPooling(multi_features)
 

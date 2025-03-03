@@ -14,7 +14,7 @@ from transformers import AutoModel, BertModel, Swinv2Model, RobertaModel
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
 from model import layers
-from model.layers import AttentionPooling, Classifier, DualCrossAttention,FocalLoss, MultiViewAggregation
+from model.layers import AttentionPooling, Classifier, FocalLoss, MultiViewAggregation
 
 
 def freeze_bert_params(model):
@@ -86,8 +86,8 @@ class ARGVL2Model(nn.Module):
         self.content_encoder = ARGVL2Model.get_text_encoder(config)
         self.td_rationale_encoder = ARGVL2Model.get_text_encoder(config)
         self.itc_rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        self.image_encoder = ARGVL2Model.get_image_encoder(config)
+        self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config,True)
+        self.image_encoder = ARGVL2Model.get_image_encoder(config,True)
         self.rationale_set = set(config['rationale_name'])
         if 'td' in self.rationale_set:
             self.td_rationale_fusion = layers.BaseRationaleFusion(config)
@@ -99,7 +99,6 @@ class ARGVL2Model(nn.Module):
             self.cs_rationale_fusion = layers.BaseRationaleFusion(config)
 
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
-        # self.image_content_attention_pooling = AttentionPooling(config['emb_dim'])
         view_index = {
             'td':1,
             'itc':2,
@@ -115,8 +114,8 @@ class ARGVL2Model(nn.Module):
             [True, True, False, False, False]
         ]),keep_row_col)
         self.register_buffer('mask_template', mask_template)
-        # self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2)
-        self.featureAggregator = AttentionPooling(config['emb_dim'])
+        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2)
+        # self.featureAggregator = AttentionPooling(config['emb_dim'])
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
 
@@ -328,7 +327,7 @@ class Trainer:
         self.logger.info('==================== start training ====================')
         device = self.model_device_init()
         #loss_fn = WeightedBCELoss(weight=self.config['train']['LossWeight']['classify'],reduce_class=0)
-        loss_fn = nn.BCELoss()
+        loss_fn = FocalLoss(alpha=0.75,gamma=1.0) if self.config['dataset']['name'] == 'qwen_gossipcop' else nn.BCELoss()
         optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config['train']['lr'],
                                      weight_decay=self.config['train']['weight_decay'])
         # 获取早停监控的指标名称
