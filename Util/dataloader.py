@@ -51,24 +51,6 @@ def texts2tensor(texts, max_len, tokenizer):
     return token_ids, masks
 
 
-# def texts2tensor(texts, max_len, tokenizer):
-#     """
-#     :param texts: List[ str ]
-#     :param max_len: int
-#     :param tokenizer:
-#     :return: Tensor shape (batch_size, max_len), Tensor shape (batch_size, max_len)
-#     """
-#     encodings = tokenizer(
-#         texts,
-#         add_special_to# kens=True,  # 添加特殊标记 [CLS] 和 [SEP]
-#         max_length=max_len,  # 最大长度
-#         truncation=True,  # 超出部分截断
-#         padding='max_length',  # 填充到最大长度
-#         return_attention_mask=True,  # 返回 attention mask
-#         return_tensors="pt"  # 返回 PyTorch 的张量
-#     )
-#     return encodings['input_ids'], encodings['attention_mask']
-
 def load_image_list(image_path_list, image_processor):
     """
     :param image_path_list: list[ str ]

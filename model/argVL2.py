@@ -84,11 +84,10 @@ class ARGVL2Model(nn.Module):
         super().__init__(*args, **kwargs)
 
         self.content_encoder = ARGVL2Model.get_text_encoder(config)
-        self.rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        # self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config)
+        self.td_rationale_encoder = ARGVL2Model.get_text_encoder(config)
         self.itc_rationale_encoder = ARGVL2Model.get_text_encoder(config)
         self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        self.image_encoder = ARGVL2Model.get_image_encoder(config,True)
+        self.image_encoder = ARGVL2Model.get_image_encoder(config)
         self.rationale_set = set(config['rationale_name'])
         if 'td' in self.rationale_set:
             self.td_rationale_fusion = layers.BaseRationaleFusion(config)
@@ -179,7 +178,7 @@ class ARGVL2Model(nn.Module):
 
 
         if 'td' in self.rationale_set:
-            td_rationale_features = self.rationale_encoder(kwargs['td_rationale'],
+            td_rationale_features = self.td_rationale_encoder(kwargs['td_rationale'],
                                                            attention_mask=td_rationale_mask).last_hidden_state
             td_rationale_pooling_feature,td_rationale_useful_pred,td_judge_pred = self.td_rationale_fusion(
                 content_feature=content_features,
@@ -193,7 +192,7 @@ class ARGVL2Model(nn.Module):
 
 
         if 'itc' in self.rationale_set:
-            itc_rationale_features = self.rationale_encoder(kwargs['itc_rationale'],
+            itc_rationale_features = self.itc_rationale_encoder(kwargs['itc_rationale'],
                                                             attention_mask=itc_rationale_mask).last_hidden_state
             multi_mask = torch.cat([kwargs['caption_mask'],content_mask],dim=1)
             multi_feature = self.content_encoder(
