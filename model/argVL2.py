@@ -84,9 +84,12 @@ class ARGVL2Model(nn.Module):
         super().__init__(*args, **kwargs)
 
         self.content_encoder = ARGVL2Model.get_text_encoder(config)
+        # self.td_rationale_encoder = ARGVL2Model.get_text_encoder(config)
+        # self.itc_rationale_encoder = ARGVL2Model.get_text_encoder(config)
+        # self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config)
         self.td_rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        self.itc_rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config,True)
+        self.itc_rationale_encoder = self.td_rationale_encoder
+        self.img_rationale_encoder = self.td_rationale_encoder
         self.image_encoder = ARGVL2Model.get_image_encoder(config,True)
         self.rationale_set = set(config['rationale_name'])
         if 'td' in self.rationale_set:
@@ -312,6 +315,7 @@ class Trainer:
         self.running_tag = f'{config["model"]["name"]}/{config["model"]["version"]}/{config["dataset"]["name"]}'
         self.writer = SummaryWriter(f'logs/tensorboard/{self.running_tag}')
         self.logger = logging.getLogger(__name__)
+        self.logger.info(f'config : {self.config}')
         self.save_path = f'{config["train"]["save_param_dir"]}/{self.running_tag}'
         self.save_path = os.path.join(config["train"]["save_param_dir"],self.running_tag)
         if os.path.exists(self.save_path):
