@@ -215,26 +215,38 @@ class MetricsRecorder:
         batch_label = batch_data['label']
         self.classifier_labels.append(batch_label)
         self.classifier_predictions.append(res['classify_pred'])
-
-        if len(rationale_names) > 0:
-            self.llm_judgment_labels.append(
-                torch.cat(
-                    [batch_data[f'{r_name}_pred']  for r_name in rationale_names], dim=0
+        # if res[f'{r_name}_judge_pred'] is not None:
+        #     self.llm_judgment_labels.append(
+        #         torch.cat(
+        #             [batch_data[f'{r_name}_pred']  for r_name in rationale_names], dim=0
+        #         )
+        #     )
+        #     llm_judgment_prediction = torch.cat(
+        #         [res[f'{r_name}_judge_pred'] for r_name in rationale_names]
+        #         ,dim=0)
+        # self.llm_judgment_predictions.append(llm_judgment_prediction)
+        # self.rationale_usefulness_labels.append(torch.cat(
+        #     [batch_data[f'{r_name}_acc'] for r_name in rationale_names],
+        #     dim=0
+        # ))
+        # self.rationale_usefulness_predictions.append(
+        #     torch.cat(
+        #         [res[f'{r_name}_rationale_useful_pred']for r_name in rationale_names]
+        #           , dim=0
+        #     ))
+        for r_name in rationale_names:
+            if res[f'{r_name}_judge_pred'] is not None:
+                self.llm_judgment_predictions.append(res[f'{r_name}_judge_pred'])
+                self.llm_judgment_labels.append(batch_data[f'{r_name}_pred'])
+            if res[f'{r_name}_rationale_useful_pred'] is not None:
+                self.rationale_usefulness_predictions.append(
+                    res[f'{r_name}_rationale_useful_pred']
                 )
-            )
-            llm_judgment_prediction = torch.cat(
-                [res[f'{r_name}_judge_pred'] for r_name in rationale_names]
-                ,dim=0)
-            self.llm_judgment_predictions.append(llm_judgment_prediction)
-            self.rationale_usefulness_labels.append(torch.cat(
-                [batch_data[f'{r_name}_acc'] for r_name in rationale_names],
-                dim=0
-            ))
-            self.rationale_usefulness_predictions.append(
-                torch.cat(
-                    [res[f'{r_name}_rationale_useful_pred']for r_name in rationale_names]
-                      , dim=0
-                ))
+                self.rationale_usefulness_labels.append(batch_data[f'{r_name}_acc'])
+
+
+
+
 
 
     def get_metrics(self):

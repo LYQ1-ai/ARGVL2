@@ -37,6 +37,82 @@ def contrastive_loss(logits,label):
     return F.cross_entropy(logits,label_full.float())
 
 
+class BaseRationaleFusionWORUP(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+
+
+        self.LLM_judge_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                nn.ReLU(),
+                                                nn.Linear(config['mlp']['dims'][-1], 3))
+        self.rationale_attention_pooling = AttentionPooling(config['emb_dim'])
+
+        self.avg_pool = AvgPooling()
+
+    def forward(self,
+                content_feature,
+                content_mask,
+                rationale_feature,
+                rationale_mask):
+        rationale2content_feature = self.rationale2content_CA(query=rationale_feature,
+                                                              key=content_feature,
+                                                              value=content_feature,
+                                                              mask=content_mask)[0]
+
+        rationale2content_pooling_feature = self.avg_pool(rationale2content_feature, rationale_mask)
+        llm_judge_pred = self.LLM_judge_predictor(
+            self.rationale_attention_pooling(rationale_feature, rationale_mask)
+        )
+        return rationale2content_pooling_feature,None, llm_judge_pred
+
+class BaseRationaleFusionWOLJP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.content2rationale_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+        self.rationale2content_CA = MultiHeadCrossAttention(config['emb_dim'],config['num_heads'],dropout=config['dropout'])
+        self.rationale_useful_predictor = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                                           nn.ReLU(),
+                                                           nn.Linear(config['mlp']['dims'][-1], 1),
+                                                           nn.Sigmoid()
+                                                           )
+
+        self.rationale_attention_pooling = AttentionPooling(config['emb_dim'])
+        self.rationale_reweight_net = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
+                                             nn.LayerNorm(config['mlp']['dims'][-1]),
+                                             nn.ReLU(),
+                                             nn.Dropout(config['dropout']),
+                                             nn.Linear(config['mlp']['dims'][-1], 64),
+                                             nn.LayerNorm(64),
+                                             nn.ReLU(),
+                                             nn.Dropout(config['dropout']),
+                                             nn.Linear(64, 1),
+                                             nn.Sigmoid()
+                                             )
+        self.avg_pool = AvgPooling()
+
+    def forward(self,
+                content_feature,
+                content_mask,
+                rationale_feature,
+                rationale_mask):
+        rationale2content_feature = self.rationale2content_CA(query=rationale_feature,
+                                                              key=content_feature,
+                                                              value=content_feature,
+                                                              mask=content_mask)[0]
+
+        rationale2content_pooling_feature = self.avg_pool(rationale2content_feature, rationale_mask)
+        content2rationale_feature = self.content2rationale_CA(query=content_feature,
+                                                              key=rationale_feature,
+                                                              value=rationale_feature,
+                                                              mask=rationale_mask)[0]
+        content2rationale_pooling_feature = self.avg_pool(content2rationale_feature, content_mask)
+        rationale_useful_pred = self.rationale_useful_predictor(content2rationale_pooling_feature).squeeze(1)
+        rationale_weight = self.rationale_reweight_net(content2rationale_pooling_feature)
+        rationale2content_pooling_feature = rationale_weight * rationale2content_pooling_feature
+        return rationale2content_pooling_feature,rationale_useful_pred,None
+
 class BaseRationaleFusion(nn.Module):
 
     def __init__(self, config):
@@ -55,12 +131,10 @@ class BaseRationaleFusion(nn.Module):
         self.rationale_attention_pooling = AttentionPooling(config['emb_dim'])
         self.rationale_reweight_net = nn.Sequential(nn.Linear(config['emb_dim'], config['mlp']['dims'][-1]),
                                              nn.LayerNorm(config['mlp']['dims'][-1]),
-                                             # nn.BatchNorm1d(config['mlp']['dims'][-1]),
                                              nn.ReLU(),
                                              nn.Dropout(config['dropout']),
                                              nn.Linear(config['mlp']['dims'][-1], 64),
                                              nn.LayerNorm(64),
-                                             # nn.BatchNorm1d(64),
                                              nn.ReLU(),
                                              nn.Dropout(config['dropout']),
                                              nn.Linear(64, 1),
@@ -92,6 +166,17 @@ class BaseRationaleFusion(nn.Module):
         rationale2content_pooling_feature = rationale_weight * rationale2content_pooling_feature
         return rationale2content_pooling_feature,rationale_useful_pred, llm_judge_pred
 
+class RationaleFusion(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        if config['ablation'] == 'LJP':
+            self.rationale_fusion = BaseRationaleFusionWOLJP(config)
+        elif config['ablation'] == 'RUP':
+            self.rationale_fusion = BaseRationaleFusionWORUP(config)
+        else:
+            self.rationale_fusion = BaseRationaleFusion(config)
+    def forward(self,**kwargs):
+        return self.rationale_fusion(**kwargs)
 
 
 

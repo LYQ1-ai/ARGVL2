@@ -42,38 +42,6 @@ class ContrastiveModel(nn.Module):
         return cos_sim_matrix
 
 
-# class ContrastiveModel(nn.Module):
-#
-#     def __init__(self, text_encoder_path,image_encoder_path,sim_emb,temperature=0.02,**kwargs):
-#         super(ContrastiveModel, self).__init__()
-#         self.text_encoder = AutoModel.from_pretrained(text_encoder_path)
-#         self.text_projection = nn.Sequential(
-#             nn.Linear(768, sim_emb),
-#             nn.ReLU(),
-#         )
-#         self.image_encoder = AutoModel.from_pretrained(image_encoder_path)
-#         self.image_projection = nn.Sequential(
-#             nn.Linear(768, sim_emb),
-#             nn.ReLU(),
-#         )
-#         self.log_temperature = nn.Parameter(torch.tensor(temperature).log())
-#
-#
-#     def forward(self,**kwargs):
-#         text ,text_mask = kwargs['img_rationale'],kwargs['img_rationale_mask']
-#         image = kwargs['image']
-#         text_features = self.text_encoder(text,attention_mask=text_mask).pooler_output
-#         image_features = self.image_encoder(image).pooler_output
-#         text_features = self.text_projection(text_features)
-#         image_features = self.image_projection(image_features)
-#
-#         text_features = F.normalize(text_features, p=2, dim=1)
-#         image_features = F.normalize(image_features, p=2, dim=1)
-#
-#         cos_sim_matrix = torch.matmul(text_features, image_features.T) * torch.exp(self.log_temperature)
-#
-#         return cos_sim_matrix
-
 def train_epoch(model, loss_fn, train_loader, optimizer, epoch,device):
     print('---------- epoch {} ----------'.format(epoch))
     model.train()
@@ -175,13 +143,13 @@ class Trainer:
             self.logger.info('epoch: {}, test_loss_classify: {:.4f}'.format(epoch, val_metrics['val_loss']))
 
             if mark == Decision.SAVE:
-                torch.save(self.model.text_encoder.state_dict(), os.path.join(self.save_path, 'text_model.pth'))
+                # torch.save(self.model.text_encoder.state_dict(), os.path.join(self.save_path, 'text_model.pth'))
                 torch.save(self.model.image_encoder.state_dict(), os.path.join(self.save_path, 'image_model.pth'))
             if mark == Decision.ESCAPE:
                 break
 
         self.logger.info('----- in test progress... -----')
-        self.model.text_encoder.load_state_dict(torch.load(os.path.join(self.save_path, 'text_model.pth')))
+        # self.model.text_encoder.load_state_dict(torch.load(os.path.join(self.save_path, 'text_model.pth')))
         self.model.image_encoder.load_state_dict(torch.load(os.path.join(self.save_path, 'image_model.pth')))
         test_metrics = self.test(test_loader, device)
         self.logger.info("test metrics: {}.".format(test_metrics['val_loss']))

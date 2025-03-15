@@ -64,61 +64,26 @@ class ARGVL2Model(nn.Module):
         freeze_pretrained_params(image_encoder)
         return image_encoder
 
-    @staticmethod
-    def get_multi_view_mask(mask, keep_col_row: list[int]):
-        """
-        保留mask矩阵中指定的行和列，生成子矩阵。
-
-        Args:
-            mask: 二维数组（方阵），通常表示多视角之间的关系。
-            keep_col_row: 需要保留的行和列的索引列表。
-
-        Returns:
-            保留指定行列后的子矩阵。
-        """
-        # 使用 np.ix_ 生成正确的网格索引，确保返回二维子矩阵
-        return mask[np.ix_(keep_col_row, keep_col_row)]
-
 
     def __init__(self, config, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.content_encoder = ARGVL2Model.get_text_encoder(config)
-        # self.td_rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        # self.itc_rationale_encoder = ARGVL2Model.get_text_encoder(config)
-        # self.img_rationale_encoder = ARGVL2Model.get_text_encoder(config)
         self.td_rationale_encoder = ARGVL2Model.get_text_encoder(config)
         self.itc_rationale_encoder = self.td_rationale_encoder
         self.img_rationale_encoder = self.td_rationale_encoder
-        self.image_encoder = ARGVL2Model.get_image_encoder(config,True)
+        self.image_encoder = ARGVL2Model.get_image_encoder(config,not config['ablation']=='Contra')
         self.rationale_set = set(config['rationale_name'])
         if 'td' in self.rationale_set:
-            self.td_rationale_fusion = layers.BaseRationaleFusion(config)
+            self.td_rationale_fusion = layers.RationaleFusion(config)
         if 'itc' in self.rationale_set:
-            self.itc_rationale_fusion = layers.BaseRationaleFusion(config)
+            self.itc_rationale_fusion = layers.RationaleFusion(config)
         if 'img' in self.rationale_set:
-            self.img_rationale_fusion = layers.BaseRationaleFusion(config)
-        if 'cs' in self.rationale_set:
-            self.cs_rationale_fusion = layers.BaseRationaleFusion(config)
+            self.img_rationale_fusion = layers.RationaleFusion(config)
 
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
-        view_index = {
-            'td':1,
-            'itc':2,
-            'img':3,
-        }
-        keep_row_col = [0,]
-        keep_row_col.extend([index for r_name,index in view_index.items() if r_name in self.rationale_set])
-        mask_template = ARGVL2Model.get_multi_view_mask(torch.tensor([
-            [False, False, False, True, True],
-            [False, False, False, True, True],
-            [False, False, False, False, False],
-            [True, True, False, False, False],
-            [True, True, False, False, False]
-        ]),keep_row_col)
-        self.register_buffer('mask_template', mask_template)
-        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2)
-        # self.featureAggregator = AttentionPooling(config['emb_dim'])
+        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2) if config['ablation']!='MV' \
+            else AttentionPooling(config['emb_dim'])
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
 
@@ -158,26 +123,11 @@ class ARGVL2Model(nn.Module):
         # image_content_features = self.image_encoder(kwargs['image']).last_hidden_state
 
         td_rationale_mask = kwargs['td_rationale_mask']
-        cs_rationale_mask = kwargs['cs_rationale_mask']
         itc_rationale_mask = kwargs['itc_rationale_mask']
         img_rationale_mask = kwargs['img_rationale_mask']
 
         all_features = []
         res = {}
-
-        if 'cs' in self.rationale_set:
-            cs_rationale_features = self.rationale_encoder(kwargs['cs_rationale'],
-                                                           attention_mask=cs_rationale_mask).last_hidden_state
-            cs_rationale_pooling_feature, cs_rationale_useful_pred, cs_judge_pred = self.cs_rationale_fusion(
-                content_feature=content_features,
-                content_mask=content_mask,
-                rationale_feature=cs_rationale_features,
-                rationale_mask=cs_rationale_mask,
-            )
-            all_features.append(cs_rationale_pooling_feature.unsqueeze(1))
-            res['cs_judge_pred'] = cs_judge_pred
-            res['cs_rationale_useful_pred'] = cs_rationale_useful_pred
-
 
         if 'td' in self.rationale_set:
             td_rationale_features = self.td_rationale_encoder(kwargs['td_rationale'],
@@ -261,17 +211,20 @@ def train_epoch(model, loss_fn, config, train_loader, optimizer, epoch, rational
                                    gamma=config['train']['FocalLoss']['gamma']) if config['train']['FocalLoss'][
             'enable'] else nn.BCELoss()
 
-        loss_useful_pred = 0.0
-        loss_judgement_pred = 0.0
+        loss_useful_pred = []
+        loss_judgement_pred = []
         for r_name in rationale_names:
-            loss_useful_pred += loss_useful_fn(res[f'{r_name}_rationale_useful_pred'], batch_data[f'{r_name}_acc'].float())
-            loss_judgement_pred += loss_judge_fn(res[f'{r_name}_judge_pred'], batch_data[f'{r_name}_pred'])
+            if res[f'{r_name}_rationale_useful_pred'] is not None:
+                loss_useful_pred.append(loss_useful_fn(res[f'{r_name}_rationale_useful_pred'], batch_data[f'{r_name}_acc'].float()))
+            if res[f'{r_name}_judge_pred'] is not None:
+                loss_judgement_pred.append(loss_judge_fn(res[f'{r_name}_judge_pred'], batch_data[f'{r_name}_pred']))
 
 
         loss = loss_classify
-        if len(rationale_names) > 0:
-            loss += config['train']['rationale_usefulness_evaluator_weight'] * loss_useful_pred / len(rationale_names)
-            loss += config['train']['llm_judgment_predictor_weight'] * loss_judgement_pred / len(rationale_names)
+        if len(loss_useful_pred) > 0:
+            loss += config['train']['rationale_usefulness_evaluator_weight'] * sum(loss_useful_pred) / len(loss_useful_pred)
+        if len(loss_judgement_pred) > 0:
+            loss += config['train']['llm_judgment_predictor_weight'] * sum(loss_judgement_pred) / len(loss_judgement_pred)
 
         optimizer.zero_grad()
         loss.backward()
@@ -330,7 +283,6 @@ class Trainer:
         self.logger.info('start training......')
         self.logger.info('==================== start training ====================')
         device = self.model_device_init()
-        #loss_fn = WeightedBCELoss(weight=self.config['train']['LossWeight']['classify'],reduce_class=0)
         loss_fn = FocalLoss(alpha=0.75,gamma=1.0) if self.config['dataset']['name'] == 'qwen_gossipcop' else nn.BCELoss()
         optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config['train']['lr'],
                                      weight_decay=self.config['train']['weight_decay'])
