@@ -1,0 +1,34 @@
+seed: 3757
+
+dataset:
+  name: "qwen_weibo"
+  root_path: "/home/lyq/DataSet/FakeNews/weibo_dataset"
+  use_cache: True
+  shuffle: True
+  max_len: 256
+  batch_size: 64
+
+model:
+  name: "RoBERTA"
+  version: "base"
+  text_encoder_path: "/home/lyq/Model/chinese-roberta-wwm-ext"
+
+
+train:
+  device:
+    use_cuda: True
+    use_multi: True
+    gpu: 0
+  num_epochs: 50
+  save_param_dir: "param_model"
+  lr: !!float 4e-5
+  patience: 5
+  weight_decay: !!float 5e-5
+  early_stopping_metric_name: 'f1_macro'
+
+
+logging:
+  level: "INFO"
+  log_dir: "logs/log/"
+  json_result_dir: "logs/json"
+

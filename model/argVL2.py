@@ -5,6 +5,7 @@ import os
 import time
 
 import numpy as np
+import optuna
 import torch
 from tensorboardX import SummaryWriter
 from torch import nn
@@ -82,10 +83,11 @@ class ARGVL2Model(nn.Module):
             self.img_rationale_fusion = layers.RationaleFusion(config)
 
         self.content_attention_pooling = AttentionPooling(config['emb_dim'])
-        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=2) if config['ablation']!='MV' \
+        self.featureAggregator = MultiViewAggregation(config['emb_dim'], len(self.rationale_set) + 1,layers=config['MV_layers']) if config['ablation']!='MV' \
             else AttentionPooling(config['emb_dim'])
 
         self.classifier = Classifier(config['emb_dim'], config['mlp']['dims'], config['dropout'])
+
 
 
 
@@ -261,8 +263,13 @@ class Trainer:
 
 
 
-    def __init__(self, config):
+    def __init__(self, config,**kwargs):
         self.config = config
+        self.train_loader, self.val_loader, self.test_loader = dataloader.load_data(
+            text_encoder_path=self.config['model']['text_encoder_path'],
+            image_encoder_path=self.config['model']['image_encoder_path'],
+            use_image=True,
+            **self.config['dataset'])
         self.model = ARGVL2Model(config['model'])
         self.rationale_names = config['model']['rationale_name']
         self.running_tag = f'{config["model"]["name"]}/{config["model"]["version"]}/{config["dataset"]["name"]}'
@@ -271,6 +278,7 @@ class Trainer:
         self.logger.info(f'config : {self.config}')
         self.save_path = f'{config["train"]["save_param_dir"]}/{self.running_tag}'
         self.save_path = os.path.join(config["train"]["save_param_dir"],self.running_tag)
+        self.trial = kwargs.get('trial', None)
         if os.path.exists(self.save_path):
             self.save_param_dir = self.save_path
         else:
@@ -304,19 +312,20 @@ class Trainer:
             mode=mode
         )
 
-        train_loader, val_loader, test_loader = dataloader.load_data(text_encoder_path=self.config['model']['text_encoder_path'],
-                                                                             image_encoder_path=self.config['model']['image_encoder_path'],
-                                                                             use_image=True,
-                                                                            **self.config['dataset'])
+
 
         ed_tm = time.time()
         self.logger.info('time cost in model and data loading: {}s'.format(ed_tm - st_tm))
         for epoch in range(self.config['train']['num_epochs']):
-            avg_loss_classify = train_epoch(self.model, loss_fn, self.config, train_loader, optimizer, epoch, self.rationale_names,device)
+            avg_loss_classify = train_epoch(self.model, loss_fn, self.config, self.train_loader, optimizer, epoch, self.rationale_names,device)
             self.writer.add_scalar('train/loss_classify', avg_loss_classify.item(), epoch)
             self.logger.info('epoch: {}, train_loss_classify: {:.4f}'.format(epoch, avg_loss_classify.item()))
             self.logger.info('----- in val progress... -----')
-            val_metrics = self.test(val_loader, device)
+            val_metrics = self.test(self.val_loader, device)
+            if self.trial:
+                self.trial.report(val_metrics['classifier']['f1_macro'], epoch)
+                if self.trial.should_prune():
+                    raise optuna.TrialPruned()
             mark = recorder.add(val_metrics['classifier'])
 
             self.writer.add_scalar('test/loss_classify', val_metrics['classifier']['loss_classify'], epoch)
@@ -329,7 +338,7 @@ class Trainer:
 
         self.logger.info('----- in test progress... -----')
         self.model.load_state_dict(torch.load(os.path.join(self.save_path, 'model.pth'),weights_only=True))
-        test_metrics = self.test(test_loader, device)
+        test_metrics = self.test(self.test_loader, device)
         self.logger.info("test metrics: {}.".format(test_metrics['classifier']))
         self.writer.add_scalars(self.running_tag, test_metrics['classifier'])
 

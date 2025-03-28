@@ -13,7 +13,7 @@ from transformers import AutoModel, BertModel, Swinv2Model
 
 from Util import dataloader
 from Util.Util import try_all_gpus, Recorder, Averager, data_to_device, MetricsRecorder, Decision
-from model.layers import AttentionPooling, Classifier, SelfAttentionFeatureExtract, AvgPooling, MultiHeadCrossAttention
+from model.layers import AttentionPooling, Classifier, AvgPooling, MultiHeadCrossAttention
 
 
 def freeze_bert_params(model):

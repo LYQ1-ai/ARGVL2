@@ -235,16 +235,16 @@ from torch.utils.data import DataLoader, DistributedSampler
 def load_data(name,
               root_path,
               text_encoder_path,
-              image_encoder_path,
-              use_image,
+
               max_len,
-              rationale_max_len,
               batch_size,
               shuffle,
               use_cache,
+              image_encoder_path=None,
               **kwargs
               ):
     tokenizer = AutoTokenizer.from_pretrained(text_encoder_path)
+    use_image = kwargs.get('use_image',False)
     image_processor = AutoImageProcessor.from_pretrained(image_encoder_path) if use_image else None
 
     dataset_func_dict = {
@@ -259,6 +259,7 @@ def load_data(name,
 
     for data_type in ['train', 'val', 'test']:
         shuffle_param = shuffle if data_type == 'train' else False
+        rationale_max_len = kwargs.get('rationale_max_len',max_len)
         dataset = dataset_func_dict[name](root_path,data_type,tokenizer,image_processor,max_len,rationale_max_len,use_cache,use_image)
 
         # 创建DataLoader

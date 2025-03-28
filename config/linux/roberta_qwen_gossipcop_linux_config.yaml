@@ -1,0 +1,33 @@
+seed: 3757
+
+dataset:
+  name: "qwen_gossipcop"
+  root_path: "/home/lyq/DataSet/FakeNews/gossipcop"
+  use_cache: True
+  shuffle: True
+  max_len: 170
+  batch_size: 64
+
+model:
+  name: "RoBERTA"
+  version: "base"
+  text_encoder_path: "/home/lyq/Model/roberta-base"
+
+  # ['train']
+train:
+  device:
+    use_cuda: True
+    use_multi: True
+    gpu: 0
+  num_epochs: 50
+  save_param_dir: "param_model"
+  lr: !!float 5e-5
+  patience: 5
+  weight_decay: !!float 5e-5
+  early_stopping_metric_name: 'f1_macro'
+
+logging:
+  level: "INFO"
+  log_dir: "logs/log/"
+  json_result_dir: "logs/json"
+

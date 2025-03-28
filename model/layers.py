@@ -12,23 +12,6 @@ from torch.distributions import Independent, Normal, kl_divergence
 from torch.nn.functional import softplus
 
 
-# def contrastive_loss(logits):
-#     n = logits.size(0)  # 获取批次大小
-#
-#     # 生成标签 (0 到 n-1)
-#     labels = torch.arange(n, device=logits.device)
-#
-#     # 计算 loss_i: 沿 axis=0 的交叉熵损失
-#     loss_i = F.cross_entropy(logits, labels)
-#
-#     # 计算 loss_t: 沿 axis=1 的交叉熵损失
-#     # 转置 logits 矩阵以沿不同轴计算
-#     loss_t = F.cross_entropy(logits.T, labels)
-#
-#     # 平均损失
-#     loss = (loss_i + loss_t) / 2
-#
-#     return loss
 
 def contrastive_loss(logits,label):
     batch_size = logits.size(0)
@@ -410,7 +393,34 @@ class MultiViewAggregation(nn.Module):
         return self.attentionPooling(multi_features)
 
 
+class MSALayer(nn.Module):
 
+    def __init__(self, emb_dim):
+        super(MSALayer,self).__init__()
+        self.attention = nn.MultiheadAttention(emb_dim,num_heads=8,batch_first=True,bias=False,dropout=0.4)
+        self.normal = nn.LayerNorm(emb_dim)
+
+    def forward(self, x,mask=None):
+        if mask is not None:
+            mask = ~mask.bool()
+        out = self.attention(query=x,key=x,value=x,key_padding_mask=mask)[0]
+        return self.normal(out + x)
+
+
+
+class MultiViewSAFeatureAggregation(nn.Module):
+    def __init__(self, emb_dim,layers=4):
+        super(MultiViewSAFeatureAggregation,self).__init__()
+        self.MultiViewAggregationLayers = nn.ModuleList([MSALayer(emb_dim) for _ in range(layers)])
+        self.attentionPooling = AttentionPooling(emb_dim)
+    def forward(self, multi_features,mask=None):
+        for blk in self.MultiViewAggregationLayers:
+            residual = multi_features
+            # TODO 添加残差
+            multi_features = blk(multi_features, mask)
+            multi_features = residual + multi_features
+
+        return self.attentionPooling(multi_features)
 
 
 
@@ -455,75 +465,7 @@ class ImageCaptionGate(nn.Module):
         return self.image_reweight_net(content2caption_attn_pooling)
 
 
-class SelfAttentionFeatureExtract(torch.nn.Module):
-    def __init__(self, multi_head_num, input_size):
-        super(SelfAttentionFeatureExtract, self).__init__()
-        self.attention = MultiHeadedAttention(multi_head_num, input_size)
-    def forward(self, query,key,value, mask=None):
-        mask = mask.view(mask.size(0), 1, 1, mask.size(-1))
 
-        feature, attn = self.attention(query=query,
-                                 value=value,
-                                 key=key,
-                                 mask=mask
-                                 )
-        return feature, attn
-
-
-class Attention(torch.nn.Module):
-    """
-    Compute 'Scaled Dot Product Attention
-    """
-
-    def forward(self, query, key, value, mask=None, dropout=None):
-        scores = torch.matmul(query, key.transpose(-2, -1)) \
-                 / math.sqrt(query.size(-1))
-
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, float("-inf"))
-
-        p_attn = F.softmax(scores, dim=-1)
-
-        if dropout is not None:
-            p_attn = dropout(p_attn)
-
-        return torch.matmul(p_attn, value), p_attn
-
-class MultiHeadedAttention(torch.nn.Module):
-    """
-    Take in model size and number of heads.
-    """
-
-    def __init__(self, h, d_model, dropout=0.1):
-        super(MultiHeadedAttention, self).__init__()
-        assert d_model % h == 0
-
-        # We assume d_v always equals d_k
-        self.d_k = d_model // h
-        self.h = h
-
-        self.linear_layers = torch.nn.ModuleList([torch.nn.Linear(d_model, d_model) for _ in range(3)])
-        self.output_linear = torch.nn.Linear(d_model, d_model)
-        self.attention = Attention()
-
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, query, key, value, mask=None):
-        batch_size = query.size(0)
-        if mask is not None:
-            mask = mask.repeat(1, self.h, 1, 1)
-        # 1) Do all the linear projections in batch from d_model => h x d_k
-        query, key, value = [l(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
-                             for l, x in zip(self.linear_layers, (query, key, value))]
-
-        # 2) Apply attention on all the projected vectors in batch.
-        x, attn = self.attention(query, key, value, mask=mask, dropout=self.dropout)
-        # print('x shape after self attention: {}'.format(x.shape))
-
-        # 3) "Concat" using a view and apply a final linear.
-        x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
-
-        return self.output_linear(x), attn
 
 class Classifier(nn.Module):
     def __init__(self, input_dim, hidden_dims,dropout):
